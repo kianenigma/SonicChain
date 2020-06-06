@@ -1,0 +1,7 @@
+[workspace]
+
+members = [
+	"state",
+	"primitives",
+	"runtime",
+]
