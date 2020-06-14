@@ -1,84 +1,90 @@
-pub use primitives::*;
-use state::{GenericState, KeyT, TaintState, TaintT, ValueT};
-use std::marker::PhantomData;
+use primitives::*;
+use state::GenericState;
 
-pub type State = dyn GenericState<Key, Value, ThreadId>;
+pub mod balances;
+pub mod staking;
 
-pub type DispatchResult = Result<(), ()>;
+/// The result of a dispatch.
+pub type DispatchResult = Result<(), ThreadId>;
+
+/// The result of the validation of a dispatchable.
 pub type ValidationResult = Result<(), ()>;
 
+/// Anything that can be dispatched.
+///
+/// Both the inner call and the outer call will be of type Dispatchable.
 pub trait Dispatchable<S: GenericState<Key, Value, ThreadId>> {
-	fn dispatch(&self, state: &S, origin: Origin) -> DispatchResult;
-	fn validate(&self, _: &S, _: Origin) -> ValidationResult {
+	/// Dispatch this dispatchable.
+	fn dispatch(&self, state: &S, origin: AccountId) -> DispatchResult;
+
+	/// Validate this dispatchable.
+	///
+	/// This should be cheap and return potentially some useful metadata about the dispatchable.
+	fn validate(&self, _: &S, _: AccountId) -> ValidationResult {
 		Ok(())
 	}
 }
 
+/// The outer call of the runtime.
+///
+/// This is an encoding of all the transactions that can be executed.
+#[derive(Debug, Clone)]
+pub enum OuterCall {
+	Balances(balances::Call),
+}
+
+impl<S: GenericState<Key, Value, ThreadId>> Dispatchable<S> for OuterCall {
+	fn dispatch(&self, state: &S, origin: AccountId) -> DispatchResult {
+		match self {
+			OuterCall::Balances(inner) => inner.dispatch(state, origin),
+		}
+	}
+}
+
+/// A runtime.
+///
+/// The main functionality of the runtime is that it orchestrates the execution of transactions.
 pub struct Runtime<'a, S: GenericState<Key, Value, ThreadId>> {
-	state: &'a S,
+	/// A reference to a state.
+	pub state: &'a S,
+	/// The id of the current runtime.
+	pub id: ThreadId,
 }
 
 impl<'a, S> Runtime<'a, S>
 where
 	S: GenericState<Key, Value, ThreadId>,
 {
-	fn new(state: &'a S) -> Self {
-		Self { state }
+	/// Create a new runtime.
+	pub fn new(state: &'a S, id: ThreadId) -> Self {
+		Self { state, id }
 	}
 
-	fn dispatch(&self, call: Call, origin: Origin) -> DispatchResult {
+	/// Dispatch a call.
+	pub fn dispatch(&self, call: OuterCall, origin: AccountId) -> DispatchResult {
 		call.dispatch(self.state, origin)
 	}
 
-	fn validate(&self, call: Call, origin: Origin) -> ValidationResult {
+	/// Validate a call.
+	pub fn validate(&self, call: OuterCall, origin: AccountId) -> ValidationResult {
 		call.validate(self.state, origin)
 	}
-}
 
-#[derive(Debug, Clone)]
-enum Call {
-	Balances(balances::Call),
-}
-
-impl<S: GenericState<Key, Value, ThreadId>> Dispatchable<S> for Call {
-	fn dispatch(&self, state: &S, origin: Origin) -> DispatchResult {
-		match self {
-			Call::Balances(inner) => inner.dispatch(state, origin),
-		}
-	}
-}
-
-mod balances {
-	use super::*;
-
-	#[derive(Debug, Clone)]
-	pub enum Call {
-		Transfer(u64, u64),
+	/// Read from storage.
+	pub fn read(&self, key: &Key) -> Result<Value, ThreadId> {
+		self.state.read(key, self.id)
 	}
 
-	impl<S: GenericState<Key, Value, ThreadId>> Dispatchable<S> for Call {
-		fn dispatch(&self, state: &S, origin: Origin) -> DispatchResult {
-			match *self {
-				Self::Transfer(to, value) => transfer(state, origin, to, value),
-			}
-		}
-	}
-
-	fn transfer<S: GenericState<Key, Value, ThreadId>>(
-		state: &S,
-		origin: Origin,
-		to: u64,
-		value: u64,
-	) -> DispatchResult {
-		state.read(&10, 1);
-		state.write(&10, vec![1, 2, 3], 1);
-		Ok(())
+	/// Write to storage.
+	pub fn write(&self, key: &Key, value: Value) -> Result<(), ThreadId> {
+		self.state.write(key, value, self.id)
 	}
 }
 
 #[cfg(test)]
 mod test {
 	use super::*;
+	use state::TaintState;
 	use std::sync::Arc;
 
 	// TODO: I can see the value in making the runtime also generic on this stuff.
@@ -91,16 +97,16 @@ mod test {
 
 		let state_ptr = Arc::clone(&state);
 		std::thread::spawn(move || {
-			let transaction = Call::Balances(balances::Call::Transfer(100, 1000));
-			let runtime = Runtime::new(state_ptr.as_ref());
+			let runtime = Runtime::new(state_ptr.as_ref(), 1);
+			let transaction = OuterCall::Balances(balances::Call::Transfer(100, 1000));
 			assert!(runtime.dispatch(transaction.clone(), 2).is_ok());
 			assert!(runtime.validate(transaction, 2).is_ok());
 		});
 
 		let state_ptr = Arc::clone(&state);
 		std::thread::spawn(move || {
-			let transaction = Call::Balances(balances::Call::Transfer(20, 1000));
-			let runtime = Runtime::new(state_ptr.as_ref());
+			let runtime = Runtime::new(state_ptr.as_ref(), 2);
+			let transaction = OuterCall::Balances(balances::Call::Transfer(20, 1000));
 			assert!(runtime.dispatch(transaction.clone(), 1).is_ok());
 			assert!(runtime.validate(transaction, 1).is_ok());
 		});

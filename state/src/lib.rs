@@ -1,9 +1,7 @@
 use std::cell::RefCell;
 use std::collections::hash_map::HashMap;
 use std::fmt::Debug;
-use std::sync::RwLock;
-
-// use primitives::{Key, ThreadId, Value};
+use std::sync::{Arc, RwLock};
 
 /// Public interface of a state database. It could in principle use any backend.
 pub trait GenericState<K, V, T> {
@@ -16,8 +14,6 @@ pub trait GenericState<K, V, T> {
 	/// - If the key exists, and the taint is **not** equal to `current`, then `Err(owner)` is
 	///   returned.
 	/// 	- This will only require read locks.
-	///       TODO: we could change this api to return some sort of immutable reference of `V`, not
-	///       the cloned version of the thing itself.
 	fn read(&self, key: &K, current: T) -> Result<V, T>;
 
 	/// Write to the state entry at `key`.
@@ -33,16 +29,17 @@ pub trait GenericState<K, V, T> {
 	/// 	- This will only require read locks.
 	fn write(&self, key: &K, value: V, current: T) -> Result<(), T>;
 
-	/// A combination of read and write, in place. Just a syntactic sugar, not really optimised.
-	fn mutate(&self, key: &K, update: impl Fn(V) -> V, current: T) -> Result<(), T>
+	/// A combination of read and write, in place. Just a syntactic sugar, not really optimized.
+	fn mutate(&self, key: &K, update: impl Fn(&mut V) -> (), current: T) -> Result<(), T>
 	where
 		K: KeyT,
 		V: ValueT,
 		T: TaintT,
 	{
-		self.read(key, current)
-			.map(update)
-			.and_then(|new_val| self.write(key, new_val, current))
+		self.read(key, current).and_then(|mut val| {
+			(update)(&mut val);
+			self.write(key, val, current)
+		})
 	}
 }
 
@@ -54,8 +51,8 @@ impl<T: Clone + Debug + std::hash::Hash + Eq + PartialEq> KeyT for T {}
 pub trait ValueT: Clone + Debug + Default {}
 impl<T: Clone + Debug + Default> ValueT for T {}
 
-pub trait TaintT: Clone + Copy + Debug + Default + Eq + PartialEq {}
-impl<T: Clone + Copy + Debug + Default + Eq + PartialEq> TaintT for T {}
+pub trait TaintT: Clone + Copy + Debug + Eq + PartialEq {}
+impl<T: Clone + Copy + Debug + Eq + PartialEq> TaintT for T {}
 
 #[derive(Default, Debug, Clone)]
 pub struct StateEntry<V, T> {
@@ -77,40 +74,58 @@ impl<V: ValueT, T: TaintT> StateEntry<V, T> {
 	pub fn new_taint(taint: T) -> Self {
 		Self {
 			taint,
-			..Default::default()
+			data: Default::default(),
 		}
 	}
 }
 
-pub struct TaintState<K, V, T> {
+/// A struct that implements `GenericState`.
+///
+/// This implements the taintable struct. Each access will try and taint that state key. Any further
+/// access from other threads will not be allowed.
+///
+/// This is a highly concurrent implementation. Locking is scarce.
+#[derive(Debug, Default)]
+pub struct TaintState<K: KeyT, V: ValueT, T: TaintT> {
 	backend: RwLock<MapType<K, V, T>>,
 }
 
 impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
+	/// Create a new `TaintState`.
 	pub fn new() -> Self {
 		Self {
 			backend: RwLock::new(MapType::default()),
 		}
 	}
 
+	/// Consume self and return it wrapped in an `Arc`.
+	pub fn as_arc(self) -> Arc<Self> {
+		std::sync::Arc::new(self)
+	}
+
+	/// Create self with given capacity.
 	pub fn with_capacity(capacity: usize) -> Self {
 		Self {
 			backend: RwLock::new(MapType::with_capacity(capacity)),
 		}
 	}
 
+	/// Unsafe implementation of insert. This will not respect the tainting of the key.
 	pub fn unsafe_insert(&self, at: &K, value: StateEntry<V, T>) {
 		self.backend.write().unwrap().insert(at.clone(), value);
 	}
 
+	/// Unsafe implementation of read. This will not respect the tainting of the key.
 	pub fn unsafe_read_value(&self, key: &K) -> Option<V> {
 		self.unsafe_read(key).map(|e| e.data.clone().into_inner())
 	}
 
+	/// Unsafe implementation of read. This will not respect the tainting of the key.
 	pub fn unsafe_read_taint(&self, key: &K) -> Option<T> {
 		self.unsafe_read(key).map(|e| e.taint)
 	}
 
+	/// Unsafe implementation of read. This will not respect the tainting of the key.
 	fn unsafe_read(&self, key: &K) -> Option<StateEntry<V, T>> {
 		self.backend.read().unwrap().get(key).cloned()
 	}
@@ -180,7 +195,7 @@ impl<K: KeyT, V: ValueT, T: TaintT> GenericState<K, V, T> for TaintState<K, V, T
 }
 
 #[cfg(test)]
-mod test {
+mod test_state {
 	use super::*;
 	use std::sync::Arc;
 	use std::thread;
@@ -191,6 +206,10 @@ mod test {
 
 	type TestState = TaintState<Key, Value, ThreadId>;
 
+	fn arc_test_state() -> Arc<TestState> {
+		Arc::new(TestState::new())
+	}
+
 	#[test]
 	fn basic_state_works() {
 		let state = TaintState::new();
@@ -200,7 +219,7 @@ mod test {
 	}
 
 	#[test]
-	fn taint_state_ops() {
+	fn basic_read_write_ops() {
 		let state = TestState::new();
 		assert_eq!(state.read(&10, 1).unwrap(), 0);
 		assert!(state.write(&10, 5, 1).is_ok());
@@ -231,8 +250,7 @@ mod test {
 
 	#[test]
 	fn can_share_state_between_threads() {
-		let state = TestState::new();
-		let state = Arc::from(state);
+		let state = arc_test_state();
 
 		let h1 = {
 			let state = Arc::clone(&state);
@@ -252,10 +270,50 @@ mod test {
 	}
 
 	#[test]
+	fn mutate_works() {
+		let state = arc_test_state();
+
+		assert!(state
+			.mutate(
+				&10,
+				|old| {
+					assert_eq!(*old, Value::default());
+					*old = 5;
+				},
+				1
+			)
+			.is_ok());
+
+		assert!(state
+			.mutate(
+				&10,
+				|old| {
+					assert_eq!(*old, 5);
+					*old = 6;
+				},
+				1
+			)
+			.is_ok());
+
+		state.unsafe_insert(&11, StateEntry::new(11, 2));
+
+		assert!(state
+			.mutate(
+				&11,
+				|_| {
+					// closure will never be executed.
+					assert!(false);
+				},
+				1
+			)
+			.is_err());
+	}
+
+	#[test]
 	fn only_one_thread_can_taint_read() {
-		let state = TestState::new();
-		let state = Arc::from(state);
+		let state = arc_test_state();
 		let num_threads = 12;
+
 		let handles: Vec<std::thread::JoinHandle<Result<Value, ThreadId>>> = (1..=num_threads)
 			.map(|id| {
 				let state = Arc::clone(&state);
