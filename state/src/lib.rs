@@ -206,10 +206,6 @@ mod test_state {
 
 	type TestState = TaintState<Key, Value, ThreadId>;
 
-	fn arc_test_state() -> Arc<TestState> {
-		Arc::new(TestState::new())
-	}
-
 	#[test]
 	fn basic_state_works() {
 		let state = TaintState::new();
@@ -250,7 +246,7 @@ mod test_state {
 
 	#[test]
 	fn can_share_state_between_threads() {
-		let state = arc_test_state();
+		let state = TestState::new().as_arc();
 
 		let h1 = {
 			let state = Arc::clone(&state);
@@ -271,7 +267,7 @@ mod test_state {
 
 	#[test]
 	fn mutate_works() {
-		let state = arc_test_state();
+		let state = TestState::new().as_arc();
 
 		assert!(state
 			.mutate(
@@ -311,7 +307,7 @@ mod test_state {
 
 	#[test]
 	fn only_one_thread_can_taint_read() {
-		let state = arc_test_state();
+		let state = TestState::new().as_arc();
 		let num_threads = 12;
 
 		let handles: Vec<std::thread::JoinHandle<Result<Value, ThreadId>>> = (1..=num_threads)
@@ -328,10 +324,5 @@ mod test_state {
 			results.iter().filter(|r| r.is_err()).count(),
 			(num_threads - 1) as usize
 		);
-	}
-
-	#[test]
-	fn multi_reader_on_tainted_does_not_block() {
-		todo!();
 	}
 }

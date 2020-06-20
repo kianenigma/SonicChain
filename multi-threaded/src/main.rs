@@ -10,15 +10,13 @@ use std::thread;
 
 mod master;
 mod message;
-#[cfg(test)]
-mod test;
 mod worker;
 
 use master::*;
 use message::*;
 use worker::*;
 
-type State = TaintState<Key, Value, ThreadId>;
+type State = runtime::RuntimeState;
 
 /// Spawn `n` new worker threads.
 ///
@@ -72,6 +70,9 @@ fn spawn_workers(n: usize) -> Master {
 				thread::park();
 
 				// run
+				#[cfg(test)]
+				worker.test_run();
+				#[cfg(not(test))]
 				worker.run();
 			})
 			.expect("Failed to spawn a new worker thread.");
@@ -116,5 +117,26 @@ fn main() {
 	let num_cpus = num_cpus::get();
 	let master = spawn_workers(num_cpus - 1);
 
-	master.join_all();
+	master.join_all().unwrap();
+}
+
+#[cfg(test)]
+mod main_tests {
+	use super::*;
+
+	#[test]
+	fn spawn_threads_works() {
+		let master = spawn_workers(4);
+		std::thread::sleep(std::time::Duration::from_millis(500));
+		assert_eq!(master.workers.len(), 4);
+
+		// unpark all workers. Then they will run their test_run automatically.
+		master.unpark_all();
+
+		// start the master as well.
+		master.run_test();
+
+		// assert to join all okay
+		assert!(master.join_all().is_ok())
+	}
 }

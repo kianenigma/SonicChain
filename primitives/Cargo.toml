@@ -5,3 +5,6 @@ authors = ["kianenigma <kian.peymani@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+ed25519-dalek = "1.0.0-pre.3"
+rand = "0.7.3"
+blake3 = "0.3.4"

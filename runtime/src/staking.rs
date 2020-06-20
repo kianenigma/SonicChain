@@ -2,7 +2,7 @@ use crate::{DispatchResult, Dispatchable};
 use primitives::*;
 use state::GenericState;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Call {
 	/// Bond some funds.
 	Bond(Balance),
