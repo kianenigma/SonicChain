@@ -113,8 +113,6 @@ impl From<edc::Signature> for Signature {
 
 pub mod testing {
 	use super::*;
-	// TODO: create at least 4 funded accounts here and export them;
-	// Also move the new function to
 
 	pub fn alice() -> Pair {
 		let bytes = vec![
@@ -137,11 +135,23 @@ pub mod testing {
 	}
 
 	pub fn dave() -> Pair {
-		unimplemented!();
+		let bytes = vec![
+			67, 204, 236, 61, 177, 124, 97, 247, 255, 113, 195, 14, 108, 91, 93, 12, 22, 12, 41,
+			58, 87, 216, 50, 66, 119, 85, 159, 68, 236, 83, 214, 122, 52, 250, 190, 45, 30, 123,
+			179, 245, 198, 198, 171, 122, 42, 39, 219, 252, 155, 118, 172, 3, 42, 140, 242, 58,
+			182, 214, 35, 33, 6, 134, 37, 202,
+		];
+		Pair(edc::Keypair::from_bytes(bytes.as_ref()).unwrap())
 	}
 
 	pub fn eve() -> Pair {
-		unimplemented!();
+		let bytes = vec![
+			185, 198, 116, 114, 180, 24, 166, 247, 113, 53, 68, 236, 101, 157, 192, 36, 178, 245,
+			184, 163, 229, 2, 237, 118, 239, 109, 177, 222, 173, 126, 134, 152, 204, 62, 140, 165,
+			109, 43, 220, 109, 69, 91, 85, 247, 59, 82, 203, 199, 103, 205, 90, 69, 28, 20, 51,
+			193, 226, 144, 69, 204, 33, 88, 36, 191,
+		];
+		Pair(edc::Keypair::from_bytes(bytes.as_ref()).unwrap())
 	}
 
 	pub fn random() -> Pair {
@@ -155,15 +165,6 @@ pub mod testing {
 mod primitive_tests {
 	use super::*;
 	use parity_scale_codec::{Decode, Encode};
-
-	#[test]
-	#[ignore]
-	fn random_works() {
-		// we can just use this to generate more random valid keys.
-		let r = testing::random();
-		dbg!(r);
-		assert!(false);
-	}
 
 	#[test]
 	fn public_is_codec() {

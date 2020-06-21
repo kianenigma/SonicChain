@@ -156,7 +156,8 @@ impl Worker {
 						.map(|_| TransactionExecution::ForwardedToMaster)
 				}
 				(DispatchError::LogicError(why), _) => {
-					// Fine. We executed this. // TODO: report to master.
+					// Fine. We executed this.
+					// FIXME: report to master.
 					Ok(TransactionExecution::Executed(Err(
 						DispatchError::LogicError(why),
 					)))
