@@ -1,6 +1,6 @@
+use parity_scale_codec::{Decode, Encode};
 use primitives::*;
 use state::{GenericState, TaintState};
-use std::cell::RefCell;
 use std::sync::Arc;
 
 // TODO: the relation between the Runtime and each module is not ideal. Preferably I'd like to make
@@ -46,7 +46,7 @@ pub trait Dispatchable<R: GenericRuntime> {
 /// The outer call of the runtime.
 ///
 /// This is an encoding of all the transactions that can be executed.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Encode, Decode)]
 pub enum OuterCall {
 	Balances(balances::Call),
 }
@@ -125,7 +125,6 @@ impl GenericRuntime for Runtime {
 mod test {
 	use super::*;
 	use primitives::AccountId;
-	use state::TaintState;
 	use std::sync::Arc;
 
 	#[test]

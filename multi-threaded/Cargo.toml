@@ -11,6 +11,8 @@ runtime = { path =  "../runtime" }
 state = { path =  "../state" }
 primitives = { path = "../primitives" }
 
+parity-scale-codec = { version = "1.3.1", features = ["derive"] }
+
 num_cpus = "1.13.0"
 log = "0.4.8"
 env_logger = "0.7.1"

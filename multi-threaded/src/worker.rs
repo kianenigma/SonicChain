@@ -1,18 +1,24 @@
 use crate::{
-	message::{Message, MessagePayload, Transaction, TransactionStatus},
+	message::{ExecutionStatus, Message, MessagePayload, Transaction},
 	State,
 };
 use primitives::ThreadId;
-use runtime::{OuterCall, Runtime};
+use runtime::{DispatchError, DispatchResult, Runtime};
 use std::collections::BTreeMap;
 use std::{
-	matches,
 	sync::{
 		mpsc::{Receiver, Sender},
 		Arc,
 	},
 	thread,
 };
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum TransactionExecution {
+	Executed(DispatchResult),
+	Forwarded(ThreadId),
+	ForwardedToMaster,
+}
 
 /// A worker thread.
 pub struct Worker {
@@ -103,7 +109,7 @@ impl Worker {
 					MessagePayload::Transaction(tx) => self.execute_or_forward(tx),
 					_ => panic!("Unexpected message payload"),
 				}
-				.unwrap()
+				.unwrap();
 			}
 		}
 	}
@@ -112,16 +118,53 @@ impl Worker {
 	///
 	/// If execution went okay, returns `Ok(())`, else, it returns the thread id of the owner of the
 	/// transaction.
-	pub(crate) fn execute_transaction(&self, tx: Transaction) -> Result<(), ThreadId> {
-		Ok(())
+	pub(crate) fn execute_transaction(&self, tx: Transaction) -> runtime::DispatchResult {
+		let call = tx.function;
+		let origin = tx.signature.0;
+		runtime::Dispatchable::dispatch(&call, &self.runtime, origin)
 	}
 
 	/// Tries to execute the transaction, else forward it to either another worker who owns it, or
 	/// the master of the transaction has already been forwarded.
 	///
 	/// This can only fail if the communication fails.
-	pub(crate) fn execute_or_forward(&self, tx: Transaction) -> Result<(), ()> {
-		Ok(())
+	pub(crate) fn execute_or_forward(
+		&self,
+		mut tx: Transaction,
+	) -> Result<TransactionExecution, ()> {
+		if let Err(err) = self.execute_transaction(tx.clone()) {
+			match (err, tx.exec_status) {
+				(DispatchError::Tainted(owner), ExecutionStatus::Initial) => {
+					// forward it to the owner.
+					tx.exec_status = ExecutionStatus::Forwarded;
+					let payload = MessagePayload::Transaction(tx);
+					let msg = Message::new_from_thread(payload);
+					self.to_others
+						.get(&owner)
+						.expect("Must have queue to all other workers; qed")
+						.send(msg)
+						.map_err(|_| ())
+						.map(|_| TransactionExecution::Forwarded(owner))
+				}
+				(DispatchError::Tainted(_), ExecutionStatus::Forwarded) => {
+					// forward it to the master as an orphan
+					let payload = MessagePayload::Orphan(tx);
+					let msg = Message::new_from_thread(payload);
+					self.to_master
+						.send(msg)
+						.map_err(|_| ())
+						.map(|_| TransactionExecution::ForwardedToMaster)
+				}
+				(DispatchError::LogicError(why), _) => {
+					// Fine. We executed this. // TODO: report to master.
+					Ok(TransactionExecution::Executed(Err(
+						DispatchError::LogicError(why),
+					)))
+				}
+			}
+		} else {
+			Ok(TransactionExecution::Executed(Ok(())))
+		}
 	}
 
 	/// A run method only used for testing.
@@ -162,32 +205,123 @@ impl Worker {
 #[cfg(test)]
 mod worker_test {
 	use super::*;
+	use parity_scale_codec::Encode;
 	use primitives::*;
+	use runtime::balances::storage::BalanceOf;
+	use runtime::OuterCall;
+	use std::matches;
 	use std::sync::mpsc::channel;
 
-	fn test_worker() -> Worker {
+	const OTHER_WORKER: ThreadId = 69;
+	const MASTER_ID: ThreadId = 99;
+
+	fn test_worker() -> (Worker, Receiver<Message>) {
 		let state = State::new().as_arc();
 		let (master_tx, master_rx) = channel();
 		let (_, others_rx) = channel();
-		let worker = Worker::new_from_thread(99, state, master_tx, master_rx, others_rx);
-		worker
+		let (other_worker_tx, other_worker_rx) = channel();
+		let mut worker = Worker::new_from_thread(MASTER_ID, state, master_tx, master_rx, others_rx);
+		worker.to_others.insert(OTHER_WORKER, other_worker_tx);
+		(worker, other_worker_rx)
 	}
 
-	fn test_tx() -> Transaction {
-		let call = OuterCall::Balances(runtime::balances::Call::Transfer(AccountId::random(), 999));
-		Transaction::new(call)
+	fn test_tx(origin: Pair) -> (Transaction, AccountId) {
+		let call = OuterCall::Balances(runtime::balances::Call::Transfer(
+			testing::bob().public(),
+			999,
+		));
+		let signed_call = call.using_encoded(|payload| origin.sign(payload));
+		(
+			Transaction::new(call, origin.public(), signed_call),
+			origin.public(),
+		)
 	}
 
 	#[test]
 	fn can_execute_tx() {
-		let worker = test_worker();
-		let tx = test_tx();
-		worker.execute_or_forward(tx).unwrap();
+		let (worker, _) = test_worker();
+		let alice = testing::alice();
+		let (tx, alice) = test_tx(alice);
+
+		// because alice has no funds yet.
+		assert!(matches!(
+			worker.execute_or_forward(tx.clone()).unwrap(),
+			TransactionExecution::Executed(Err(e)) if e == DispatchError::LogicError("Does not have enough funds.")
+		));
+
+		// give alice some funds.
+		BalanceOf::write(&worker.runtime, alice, 999).unwrap();
+
+		// now alice has some funds.
+		assert!(matches!(
+			worker.execute_or_forward(tx).unwrap(),
+			TransactionExecution::Executed(Ok(_))
+		));
+
+		// verify that this thread, whatever it is, is now the owner of both alice and bob keys.
+		assert_eq!(
+			worker
+				.state
+				.unsafe_read_taint(&<BalanceOf<Runtime>>::key_for(testing::alice().public(),))
+				.unwrap(),
+			worker.id
+		);
+
+		assert_eq!(
+			worker
+				.state
+				.unsafe_read_taint(&<BalanceOf<Runtime>>::key_for(testing::bob().public(),))
+				.unwrap(),
+			worker.id
+		);
 	}
 
 	#[test]
-	fn will_forward_tx_if_tainted() {}
+	fn will_forward_tx_if_tainted() {
+		let (worker, other_rx) = test_worker();
+		let alice = testing::alice();
+		let (tx, alice) = test_tx(alice);
+
+		// manually taint the storage item of bob to some other thread.
+		let alice_key = <BalanceOf<Runtime>>::key_for(alice);
+		worker
+			.state
+			.unsafe_insert(&alice_key, state::StateEntry::new_taint(OTHER_WORKER));
+
+		assert!(matches!(
+			dbg!(worker.execute_or_forward(tx)).unwrap(),
+			TransactionExecution::Forwarded(x) if x == OTHER_WORKER
+		));
+
+		let incoming = other_rx.recv().unwrap();
+		assert_eq!(incoming.from, worker.id);
+		assert!(
+			matches!(incoming.payload, MessagePayload::Transaction(tx) if tx.exec_status == ExecutionStatus::Forwarded)
+		)
+	}
 
 	#[test]
-	fn will_forward_to_master_if_already_forwarded() {}
+	fn will_forward_to_master_if_already_forwarded() {
+		let (worker, _) = test_worker();
+		let alice = testing::alice();
+		let (mut tx, alice) = test_tx(alice);
+		tx.exec_status = ExecutionStatus::Forwarded;
+
+		// manually taint the storage item of bob to some other thread.
+		let alice_key = <BalanceOf<Runtime>>::key_for(alice);
+		worker
+			.state
+			.unsafe_insert(&alice_key, state::StateEntry::new_taint(OTHER_WORKER));
+
+		assert!(matches!(
+			dbg!(worker.execute_or_forward(tx)).unwrap(),
+			TransactionExecution::ForwardedToMaster
+		));
+	}
+
+	#[test]
+	#[ignore]
+	fn will_do_something_if_executed_ok() {
+		unimplemented!();
+	}
 }

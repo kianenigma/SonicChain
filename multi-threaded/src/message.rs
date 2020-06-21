@@ -9,7 +9,7 @@ use std::sync::mpsc::Sender;
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TransactionStatus {
 	/// Done by the given thread.
-	Done(primitives::ThreadId),
+	Done(ThreadId),
 	/// Ended up being an orphan.
 	Orphan,
 }
@@ -41,16 +41,20 @@ pub struct Transaction {
 	/// The function of the transaction. This should be executed by a runtime.
 	pub function: OuterCall,
 	/// The signature of the transaction
-	pub signature: Option<()>,
+	pub signature: (primitives::AccountId, primitives::Signature),
 }
 
 impl Transaction {
-	pub fn new(call: OuterCall) -> Self {
+	pub fn new(
+		call: OuterCall,
+		origin: primitives::AccountId,
+		signed_call: primitives::Signature,
+	) -> Self {
 		Self {
 			function: call,
 			status: None,
 			exec_status: ExecutionStatus::Initial,
-			signature: None,
+			signature: (origin, signed_call),
 		}
 	}
 }
@@ -77,6 +81,8 @@ pub enum MessagePayload {
 	/// This message has no response; If the thread never respond back, then the master can assume
 	/// that it has been executed by the thread.
 	Transaction(Transaction),
+	/// Report an orphan transaction back to the master.
+	Orphan(Transaction),
 	/// Initial transactions that the master distributed to the worker are done.
 	InitialPhaseDone,
 	/// Master is signaling the end.

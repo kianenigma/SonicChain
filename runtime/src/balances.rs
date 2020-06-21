@@ -3,7 +3,7 @@ use parity_scale_codec::{Decode, Encode};
 use primitives::*;
 
 /// The call of the balances module.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Encode, Decode)]
 pub enum Call {
 	Transfer(AccountId, Balance),
 }
@@ -36,9 +36,9 @@ pub mod storage {
 			key: primitives::AccountId,
 			val: primitives::Balance,
 		) -> Result<(), ThreadId> {
-			let encoded = val.encode();
+			let encoded_value = val.encode();
 			let final_key = Self::key_for(key);
-			runtime.write(&final_key, val.encode())
+			runtime.write(&final_key, encoded_value)
 		}
 
 		pub fn read(
@@ -92,8 +92,8 @@ mod balances_test {
 	fn transfer_works() {
 		let state = RuntimeState::new().as_arc();
 		let runtime = Runtime::new(state, 0);
-		let alice = AccountId::random();
-		let bob = AccountId::random();
+		let alice = primitives::testing::alice().public();
+		let bob = primitives::testing::bob().public();
 
 		// give alice some balance.
 		storage::BalanceOf::write(&runtime, alice.clone(), 999).unwrap();
@@ -110,8 +110,8 @@ mod balances_test {
 	fn transfer_fails_if_not_enough_balance() {
 		let state = RuntimeState::new().as_arc();
 		let runtime = Runtime::new(state, 0);
-		let alice = AccountId::random();
-		let bob = AccountId::random();
+		let alice = primitives::testing::alice().public();
+		let bob = primitives::testing::bob().public();
 
 		// give alice some balance.
 		storage::BalanceOf::write(&runtime, alice.clone(), 333).unwrap();

@@ -2,7 +2,6 @@
 
 use log::*;
 use primitives::*;
-use state::*;
 use std::collections::BTreeMap;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
