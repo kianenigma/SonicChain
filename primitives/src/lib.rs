@@ -2,8 +2,6 @@ use ed25519_dalek as edc;
 use parity_scale_codec as codec;
 
 /// The key of storage items.
-///
-/// We use string for simplicity; The string itself can be the hex encoded value of other hashes.
 pub type Key = Vec<u8>;
 /// Values inserted into storage.
 pub type Value = Vec<u8>;
@@ -38,17 +36,11 @@ impl codec::Decode for Public {
 }
 
 impl Public {
+	/// Create a new public key from Raw bytes.
+	///
+	/// The bytes need to be a valid curve for this to return `Ok`.
 	pub fn from_bytes(bytes: &[u8]) -> Result<Self, edc::SignatureError> {
 		edc::PublicKey::from_bytes(bytes).map(|inner| Self(inner))
-	}
-
-	/// Generates a random public key, throwing away the private part.
-	///
-	/// Should only be used for testing.
-	pub fn random() -> Self {
-		let mut csprng = rand::rngs::OsRng {};
-		let keypair = edc::Keypair::generate(&mut csprng);
-		Self(keypair.public)
 	}
 }
 
@@ -64,21 +56,26 @@ impl AsRef<[u8]> for Public {
 	}
 }
 
+/// A key value pair.
 pub struct Pair(edc::Keypair);
 
 impl Pair {
+	/// Return the public key instance.
 	pub fn public(&self) -> Public {
 		Public::from(self.0.public)
 	}
 
+	/// Consume self and return the private key instance.
 	pub fn private(self) -> Private {
 		Private::from(self.0.secret)
 	}
 
+	/// Sign the given message with the private key of this keypair and return a new [`Signature`].
 	pub fn sign(&self, message: &[u8]) -> Signature {
 		Signature(self.0.sign(message))
 	}
 
+	/// Verify the given signature with the public key of this pair.
 	pub fn verify(&self, message: &[u8], signature: &Signature) -> bool {
 		self.0.verify(message, &signature.0).is_ok()
 	}
@@ -93,6 +90,7 @@ impl std::fmt::Debug for Pair {
 	}
 }
 
+/// A private key.
 #[derive(Debug)]
 pub struct Private(edc::SecretKey);
 
@@ -102,6 +100,7 @@ impl From<edc::SecretKey> for Private {
 	}
 }
 
+/// A signature.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Signature(edc::Signature);
 
@@ -111,9 +110,11 @@ impl From<edc::Signature> for Signature {
 	}
 }
 
+/// A set of utility accounts and functions to be used only for testing.
 pub mod testing {
 	use super::*;
 
+	/// The keypair of alice.
 	pub fn alice() -> Pair {
 		let bytes = vec![
 			244, 5, 58, 42, 41, 213, 241, 132, 127, 57, 115, 17, 45, 124, 96, 105, 153, 122, 117,
@@ -124,6 +125,7 @@ pub mod testing {
 		Pair(edc::Keypair::from_bytes(bytes.as_ref()).unwrap())
 	}
 
+	/// The keypair of bob.
 	pub fn bob() -> Pair {
 		let bytes = vec![
 			169, 102, 220, 55, 249, 160, 36, 85, 87, 108, 33, 38, 8, 76, 149, 152, 246, 193, 111,
@@ -134,6 +136,7 @@ pub mod testing {
 		Pair(edc::Keypair::from_bytes(bytes.as_ref()).unwrap())
 	}
 
+	/// The keypair of dave.
 	pub fn dave() -> Pair {
 		let bytes = vec![
 			67, 204, 236, 61, 177, 124, 97, 247, 255, 113, 195, 14, 108, 91, 93, 12, 22, 12, 41,
@@ -144,6 +147,7 @@ pub mod testing {
 		Pair(edc::Keypair::from_bytes(bytes.as_ref()).unwrap())
 	}
 
+	/// The keypair of eve.
 	pub fn eve() -> Pair {
 		let bytes = vec![
 			185, 198, 116, 114, 180, 24, 166, 247, 113, 53, 68, 236, 101, 157, 192, 36, 178, 245,
@@ -154,6 +158,7 @@ pub mod testing {
 		Pair(edc::Keypair::from_bytes(bytes.as_ref()).unwrap())
 	}
 
+	/// A random keypair.
 	pub fn random() -> Pair {
 		let mut csprng = rand::rngs::OsRng {};
 		let keypair = edc::Keypair::generate(&mut csprng);

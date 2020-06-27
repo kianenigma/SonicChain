@@ -124,7 +124,7 @@ impl GenericRuntime for Runtime {
 #[cfg(test)]
 mod test {
 	use super::*;
-	use primitives::AccountId;
+	use primitives::testing;
 	use std::sync::Arc;
 
 	#[test]
@@ -134,17 +134,23 @@ mod test {
 		let state_ptr = Arc::clone(&state);
 		std::thread::spawn(move || {
 			let runtime = Runtime::new(state_ptr, 1);
-			let tx = OuterCall::Balances(balances::Call::Transfer(AccountId::random(), 1000));
-			assert!(runtime.dispatch(tx.clone(), AccountId::random()).is_ok());
-			assert!(runtime.validate(tx, AccountId::random()).is_ok());
+			let tx =
+				OuterCall::Balances(balances::Call::Transfer(testing::random().public(), 1000));
+			assert!(runtime
+				.dispatch(tx.clone(), testing::random().public())
+				.is_ok());
+			assert!(runtime.validate(tx, testing::random().public()).is_ok());
 		});
 
 		let state_ptr = Arc::clone(&state);
 		std::thread::spawn(move || {
 			let runtime = Runtime::new(state_ptr, 2);
-			let tx = OuterCall::Balances(balances::Call::Transfer(AccountId::random(), 1000));
-			assert!(runtime.dispatch(tx.clone(), AccountId::random()).is_ok());
-			assert!(runtime.validate(tx, AccountId::random()).is_ok());
+			let tx =
+				OuterCall::Balances(balances::Call::Transfer(testing::random().public(), 1000));
+			assert!(runtime
+				.dispatch(tx.clone(), testing::random().public())
+				.is_ok());
+			assert!(runtime.validate(tx, testing::random().public()).is_ok());
 		});
 	}
 }

@@ -7,15 +7,15 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use std::thread;
 
-mod master;
-mod message;
-mod worker;
+pub mod master;
+pub mod message;
+pub mod worker;
 
 use master::*;
 use message::*;
 use worker::*;
 
-type State = runtime::RuntimeState;
+pub type State = runtime::RuntimeState;
 
 /// Spawn `n` new worker threads.
 ///

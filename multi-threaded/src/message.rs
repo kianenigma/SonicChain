@@ -72,6 +72,12 @@ impl Message {
 	}
 }
 
+impl From<MessagePayload> for Message {
+	fn from(p: MessagePayload) -> Self {
+		Self::new_from_thread(p)
+	}
+}
+
 #[derive(Debug, Clone)]
 pub enum MessagePayload {
 	/// Data needed to finalize the setup of the worker.
@@ -82,7 +88,13 @@ pub enum MessagePayload {
 	/// that it has been executed by the thread.
 	Transaction(Transaction),
 	/// Report an orphan transaction back to the master.
+	// FIXME: don't report back the entire transaction here; report back an id.
 	Orphan(Transaction),
+	/// Report the execution of a transaction by a worker back to master.
+	///
+	/// This should only be used if the thread executing a transaction is not the original owner of
+	/// the transaction.
+	Executed(Transaction, ThreadId),
 	/// Initial transactions that the master distributed to the worker are done.
 	InitialPhaseDone,
 	/// Master is signaling the end.
