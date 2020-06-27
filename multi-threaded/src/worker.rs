@@ -15,7 +15,7 @@ use std::{
 
 /// The execution status of a transaction.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum ExecutionOutcome {
+enum ExecutionOutcome {
 	Executed(DispatchResult),
 	Forwarded(ThreadId),
 	ForwardedToMaster,
