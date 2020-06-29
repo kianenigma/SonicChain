@@ -11,6 +11,8 @@ pub type ThreadId = u64;
 pub type AccountId = Public;
 /// The balance type.
 pub type Balance = u128;
+/// Identifier of a transaction.
+pub type TransactionId = u32;
 
 /// A public key.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

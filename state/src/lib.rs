@@ -3,6 +3,8 @@ use std::collections::hash_map::HashMap;
 use std::fmt::Debug;
 use std::sync::{Arc, RwLock};
 
+// FIXME: some means of computing the state root.
+
 /// Public interface of a state database. It could in principle use any backend.
 pub trait GenericState<K, V, T> {
 	/// Read the state entry at `key`.

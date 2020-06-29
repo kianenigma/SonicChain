@@ -12,9 +12,17 @@ pub enum TransactionStatus {
 	Done(ThreadId),
 	/// Ended up being an orphan.
 	Orphan,
+	/// Not yet executed.
+	NotExecuted,
 }
 
-/// Execution status of a transaction
+impl Default for TransactionStatus {
+	fn default() -> Self {
+		TransactionStatus::NotExecuted
+	}
+}
+
+/// Execution status of a transaction.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ExecutionStatus {
 	/// It has just been created.
@@ -35,8 +43,9 @@ pub struct Transaction {
 	/// Status of the transaction.
 	///
 	/// This should be set at the every end, once the transaction is executed.
-	pub status: Option<TransactionStatus>,
+	pub status: TransactionStatus,
 	/// Execution status.
+	// FIXME: exclude this in the encode/decode of this type.
 	pub exec_status: ExecutionStatus,
 	/// The function of the transaction. This should be executed by a runtime.
 	pub function: OuterCall,
@@ -52,10 +61,23 @@ impl Transaction {
 	) -> Self {
 		Self {
 			function: call,
-			status: None,
+			status: TransactionStatus::NotExecuted,
 			exec_status: ExecutionStatus::Initial,
 			signature: (origin, signed_call),
 		}
+	}
+
+	#[cfg(test)]
+	fn new_transfer() -> Self {
+		use parity_scale_codec::Encode;
+		use primitives::testing;
+		let origin = testing::alice();
+		let call = runtime::OuterCall::Balances(runtime::balances::Call::Transfer(
+			testing::bob().public(),
+			999,
+		));
+		let signed_call = call.using_encoded(|payload| origin.sign(payload));
+		Self::new(call, origin.public(), signed_call)
 	}
 }
 
@@ -87,16 +109,18 @@ pub enum MessagePayload {
 	/// This message has no response; If the thread never respond back, then the master can assume
 	/// that it has been executed by the thread.
 	Transaction(Transaction),
-	/// Report an orphan transaction back to the master.
-	// FIXME: don't report back the entire transaction here; report back an id.
-	Orphan(Transaction),
+	/// Initial transactions that the master distributed to the worker are done.
+	InitialPhaseDone,
+	/// The outcome report of the initial phase.
+	InitialPhaseReport(usize, usize),
 	/// Report the execution of a transaction by a worker back to master.
 	///
 	/// This should only be used if the thread executing a transaction is not the original owner of
 	/// the transaction.
-	Executed(Transaction, ThreadId),
-	/// Initial transactions that the master distributed to the worker are done.
-	InitialPhaseDone,
+	Executed(Transaction),
+	/// Report an orphan transaction back to the master.
+	// FIXME: don't report back the entire transaction here; report back an id.
+	Orphan(Transaction),
 	/// Master is signaling the end.
 	Terminate,
 	/// A test payload.

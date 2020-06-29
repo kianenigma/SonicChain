@@ -9,6 +9,7 @@ use std::thread;
 
 pub mod master;
 pub mod message;
+pub mod pool;
 pub mod worker;
 
 use master::*;
@@ -25,7 +26,6 @@ fn spawn_workers(n: usize) -> Master {
 	let (workers_to_master_tx, workers_to_master_rx) = channel();
 
 	let mut master = Master::new_from_thread(workers_to_master_rx);
-
 	let mut to_workers: BTreeMap<ThreadId, Sender<Message>> = Default::default();
 
 	for i in 0..n {
@@ -71,6 +71,7 @@ fn spawn_workers(n: usize) -> Master {
 				// run
 				#[cfg(test)]
 				worker.test_run();
+
 				#[cfg(not(test))]
 				worker.run();
 			})
@@ -85,14 +86,11 @@ fn spawn_workers(n: usize) -> Master {
 	info!("created {} worker threads.", n);
 
 	master.workers.iter().for_each(|(_, handle)| {
-		let message = Message {
-			from: master.id,
-			payload: MessagePayload::FinalizeSetup(to_workers.clone()),
-		};
+		let message = MessagePayload::FinalizeSetup(to_workers.clone()).into();
 		handle
 			.send
 			.send(message)
-			.expect("Failed to send FinalizeSetup");
+			.expect("Can always send FinalizeSetup; qed");
 	});
 
 	master
@@ -116,6 +114,7 @@ fn main() {
 	let num_cpus = num_cpus::get();
 	let master = spawn_workers(num_cpus - 1);
 
+	// master.run().
 	master.join_all().unwrap();
 }
 
@@ -137,5 +136,11 @@ mod main_tests {
 
 		// assert to join all okay
 		assert!(master.join_all().is_ok())
+	}
+
+	#[test]
+	#[ignore]
+	fn workers_report_initial_phase_done() {
+		todo!()
 	}
 }

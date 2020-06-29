@@ -15,7 +15,7 @@ use std::{
 
 /// The execution status of a transaction.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum ExecutionOutcome {
+pub(crate) enum ExecutionOutcome {
 	Executed(DispatchResult),
 	Forwarded(ThreadId),
 	ForwardedToMaster,
@@ -108,6 +108,8 @@ impl Worker {
 	///
 	/// This should be called only once at the beginning of the execution.
 	fn deplete_master_queue(&self) {
+		let mut executed = 0;
+		let mut forwarded = 0;
 		loop {
 			let Message { payload, from } = self.from_master.recv().unwrap();
 			debug_assert_eq!(from, self.master_id);
@@ -115,12 +117,23 @@ impl Worker {
 			match payload {
 				MessagePayload::Transaction(tx) => {
 					let outcome = self.execute_or_forward(tx.clone());
+					match outcome {
+						ExecutionOutcome::Executed(_) => executed += 1,
+						ExecutionOutcome::Forwarded(_) => forwarded += 1,
+						ExecutionOutcome::ForwardedToMaster => {
+							panic!("Cannot forward to master in the initial phase")
+						}
+					}
 					log::info!("Execution of {:?} => {:?}", tx, outcome);
 				}
 				MessagePayload::InitialPhaseDone => break,
 				_ => panic!("Unexpected message payload."),
 			};
 		}
+
+		self.to_master
+			.send(MessagePayload::InitialPhaseReport(executed, forwarded).into())
+			.expect("Sending to master cannot fail; qed");
 	}
 
 	/// Tries to execute transaction.
@@ -166,7 +179,7 @@ impl Worker {
 						// belonged to use initially, do nothing. Else, report to master that we've
 						// executed it.
 						if tx.exec_status == ExecutionStatus::Forwarded {
-							let msg = MessagePayload::Executed(tx, self.id).into();
+							let msg = MessagePayload::Executed(tx).into();
 							self.to_master
 								.send(msg)
 								.expect("Send to master should work; qed.");
@@ -177,7 +190,7 @@ impl Worker {
 			}
 			Ok(_) => {
 				if tx.exec_status == ExecutionStatus::Forwarded {
-					let msg = MessagePayload::Executed(tx, self.id).into();
+					let msg = MessagePayload::Executed(tx).into();
 					self.to_master
 						.send(msg)
 						.expect("Send to master should work; qed.");
@@ -248,6 +261,7 @@ mod worker_test {
 	}
 
 	fn test_tx(origin: Pair) -> (Transaction, AccountId) {
+		// FIXME: use new_test from impl Transaction.
 		let call = OuterCall::Balances(runtime::balances::Call::Transfer(
 			testing::bob().public(),
 			999,
@@ -367,9 +381,6 @@ mod worker_test {
 
 		// master should have received a notification now.
 		let msg = master_rx.recv().unwrap();
-		assert!(matches!(
-			msg.payload,
-			MessagePayload::Executed(_, id) if id == worker.id
-		));
+		assert!(matches!(msg.payload, MessagePayload::Executed(_)));
 	}
 }
