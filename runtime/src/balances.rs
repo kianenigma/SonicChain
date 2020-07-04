@@ -1,6 +1,16 @@
-use crate::{DispatchError, DispatchResult, Dispatchable, GenericRuntime};
+use crate::decl_storage_map;
+use crate::{DispatchError, DispatchResult, Dispatchable, GenericRuntime, ValidationResult};
 use parity_scale_codec::{Decode, Encode};
 use primitives::*;
+
+const MODULE: &'static str = "balances";
+
+decl_storage_map!(
+	BalanceOf,
+	"balance_of",
+	primitives::AccountId,
+	primitives::Balance
+);
 
 /// The call of the balances module.
 #[derive(Debug, Clone, Eq, PartialEq, Encode, Decode)]
@@ -11,72 +21,38 @@ pub enum Call {
 impl<R: GenericRuntime> Dispatchable<R> for Call {
 	fn dispatch(&self, runtime: &R, origin: AccountId) -> DispatchResult {
 		match *self {
-			Self::Transfer(to, value) => transfer(origin, runtime, to, value),
+			Self::Transfer(to, value) => tx_transfer(origin, runtime, to, value),
+		}
+	}
+
+	fn validate(&self, _: &R, origin: AccountId) -> ValidationResult {
+		match *self {
+			Self::Transfer(to, _) => Ok(vec![
+				<BalanceOf<R>>::key_for(origin),
+				<BalanceOf<R>>::key_for(to),
+			]),
 		}
 	}
 }
 
-pub mod storage {
-	use super::*;
-
-	const MODULE: &'static str = "balances";
-
-	pub struct BalanceOf<R>(std::marker::PhantomData<R>);
-
-	impl<R: GenericRuntime> BalanceOf<R> {
-		pub fn key_for(key: primitives::AccountId) -> primitives::Key {
-			let mut final_key = Vec::new();
-			final_key.extend(format!("{}:{}", MODULE, "balance_of").as_bytes());
-			final_key.extend(key.as_ref());
-			final_key
-		}
-
-		pub fn write(
-			runtime: &R,
-			key: primitives::AccountId,
-			val: primitives::Balance,
-		) -> Result<(), ThreadId> {
-			let encoded_value = val.encode();
-			let final_key = Self::key_for(key);
-			runtime.write(&final_key, encoded_value)
-		}
-
-		pub fn read(
-			runtime: &R,
-			key: primitives::AccountId,
-		) -> Result<primitives::Balance, ThreadId> {
-			let final_key = Self::key_for(key);
-			let encoded = runtime.read(&final_key)?;
-			Ok(<primitives::Balance as Decode>::decode(&mut &*encoded).unwrap_or_default())
-		}
-
-		pub fn mutate(
-			runtime: &R,
-			key: primitives::AccountId,
-			update: impl Fn(&mut Balance) -> (),
-		) -> Result<(), ThreadId> {
-			let mut old = Self::read(runtime, key.clone())?;
-			update(&mut old);
-			Self::write(runtime, key, old)
-		}
-	}
-}
-
-fn transfer<R: GenericRuntime>(
+fn tx_transfer<R: GenericRuntime>(
 	origin: AccountId,
 	runtime: &R,
 	dest: AccountId,
 	value: Balance,
 ) -> DispatchResult {
+	// If we fail at this step, it is fine. We have not written anything yet.
 	let old_value =
-		storage::BalanceOf::read(runtime, origin).map_err(|id| DispatchError::Tainted(id))?;
+		BalanceOf::read(runtime, origin).map_err(|id| DispatchError::Tainted(id, false))?;
+
 	if let Some(remaining) = old_value.checked_sub(value) {
-		// update origin.
-		storage::BalanceOf::write(runtime, origin, remaining)
-			.map_err(|id| DispatchError::Tainted(id))?;
+		// update origin. Failure is okay.
+		BalanceOf::write(runtime, origin, remaining)
+			.map_err(|id| DispatchError::Tainted(id, false))?;
+
 		// update dest.
-		storage::BalanceOf::mutate(runtime, dest, |old| *old += value)
-			.map_err(|id| DispatchError::Tainted(id))?;
+		BalanceOf::mutate(runtime, dest, |old| *old += value)
+			.map_err(|id| DispatchError::Tainted(id, true))?;
 		Ok(())
 	} else {
 		Err(DispatchError::LogicError("Does not have enough funds."))
@@ -86,44 +62,54 @@ fn transfer<R: GenericRuntime>(
 #[cfg(test)]
 mod balances_test {
 	use super::*;
-	use crate::{DispatchError, OuterCall, Runtime, RuntimeState};
+	use crate::{DispatchError, OuterCall, RuntimeState, WorkerRuntime};
+	use std::sync::Arc;
+
+	// TODO: test this and storage macros with both runtime. They should both have similar
+	// behaviors.
 
 	#[test]
 	fn transfer_works() {
 		let state = RuntimeState::new().as_arc();
-		let runtime = Runtime::new(state, 0);
+		let runtime = WorkerRuntime::new(Arc::clone(&state), 0);
 		let alice = primitives::testing::alice().public();
 		let bob = primitives::testing::bob().public();
 
 		// give alice some balance.
-		storage::BalanceOf::write(&runtime, alice.clone(), 999).unwrap();
+		state.unsafe_insert_genesis_value(
+			&<BalanceOf<WorkerRuntime>>::key_for(alice),
+			(999 as Balance).encode().into(),
+		);
 
 		let transfer = OuterCall::Balances(Call::Transfer(bob.clone(), 666));
 
-		runtime.dispatch(transfer, alice).unwrap();
+		runtime.dispatch(&transfer, alice).unwrap();
 
-		assert_eq!(storage::BalanceOf::read(&runtime, bob).unwrap(), 666);
-		assert_eq!(storage::BalanceOf::read(&runtime, alice).unwrap(), 333);
+		assert_eq!(BalanceOf::read(&runtime, bob).unwrap(), 666);
+		assert_eq!(BalanceOf::read(&runtime, alice).unwrap(), 333);
 	}
 
 	#[test]
 	fn transfer_fails_if_not_enough_balance() {
 		let state = RuntimeState::new().as_arc();
-		let runtime = Runtime::new(state, 0);
+		let runtime = WorkerRuntime::new(Arc::clone(&state), 0);
 		let alice = primitives::testing::alice().public();
 		let bob = primitives::testing::bob().public();
 
 		// give alice some balance.
-		storage::BalanceOf::write(&runtime, alice.clone(), 333).unwrap();
+		state.unsafe_insert_genesis_value(
+			&<BalanceOf<WorkerRuntime>>::key_for(alice),
+			(333 as Balance).encode().into(),
+		);
 
 		let transfer = OuterCall::Balances(Call::Transfer(bob.clone(), 666));
 
 		assert_eq!(
-			runtime.dispatch(transfer, alice).unwrap_err(),
+			runtime.dispatch(&transfer, alice).unwrap_err(),
 			DispatchError::LogicError("Does not have enough funds."),
 		);
 
-		assert_eq!(storage::BalanceOf::read(&runtime, bob).unwrap(), 0);
-		assert_eq!(storage::BalanceOf::read(&runtime, alice).unwrap(), 333);
+		assert_eq!(BalanceOf::read(&runtime, bob).unwrap(), 0);
+		assert_eq!(BalanceOf::read(&runtime, alice).unwrap(), 333);
 	}
 }

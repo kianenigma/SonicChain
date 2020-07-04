@@ -1,6 +1,8 @@
-use primitives::ThreadId;
+use parity_scale_codec::Encode;
+use primitives::{ThreadId, TransactionId};
 use runtime::OuterCall;
 use std::collections::BTreeMap;
+use std::fmt::{self, Debug, Formatter};
 use std::sync::mpsc::Sender;
 
 /// Status of a transaction.
@@ -38,14 +40,15 @@ impl Default for ExecutionStatus {
 }
 
 /// Opaque transaction type.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct Transaction {
+	/// The identifier of the transaction.
+	pub id: TransactionId,
 	/// Status of the transaction.
 	///
 	/// This should be set at the every end, once the transaction is executed.
 	pub status: TransactionStatus,
 	/// Execution status.
-	// FIXME: exclude this in the encode/decode of this type.
 	pub exec_status: ExecutionStatus,
 	/// The function of the transaction. This should be executed by a runtime.
 	pub function: OuterCall,
@@ -53,13 +56,41 @@ pub struct Transaction {
 	pub signature: (primitives::AccountId, primitives::Signature),
 }
 
+/// An opaque transaction trait that can be verified.
+pub trait VerifiableTransaction {
+	/// Verify that this transaction is sane.
+	///
+	/// This should typically just check the signature.
+	fn verify(&self) -> bool;
+}
+
+impl VerifiableTransaction for Transaction {
+	fn verify(&self) -> bool {
+		let (origin, signature) = self.signature;
+		let payload = self.function.encode();
+		origin.verify(payload.as_ref(), &signature)
+	}
+}
+
+impl Debug for Transaction {
+	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+		f.debug_struct("Transaction")
+			.field("id", &self.id)
+			.field("status", &self.status)
+			.field("exec_status", &self.exec_status)
+			.finish_non_exhaustive()
+	}
+}
+
 impl Transaction {
 	pub fn new(
+		id: TransactionId,
 		call: OuterCall,
 		origin: primitives::AccountId,
 		signed_call: primitives::Signature,
 	) -> Self {
 		Self {
+			id,
 			function: call,
 			status: TransactionStatus::NotExecuted,
 			exec_status: ExecutionStatus::Initial,
@@ -67,17 +98,28 @@ impl Transaction {
 		}
 	}
 
+	/// A test transfer from the given keypair to bob with the value of 999 and tx id of 99.
 	#[cfg(test)]
-	fn new_transfer() -> Self {
-		use parity_scale_codec::Encode;
+	pub fn new_transfer(origin: primitives::Pair) -> Self {
 		use primitives::testing;
-		let origin = testing::alice();
+		const ID: u32 = 99;
+
 		let call = runtime::OuterCall::Balances(runtime::balances::Call::Transfer(
 			testing::bob().public(),
 			999,
 		));
 		let signed_call = call.using_encoded(|payload| origin.sign(payload));
-		Self::new(call, origin.public(), signed_call)
+		Self::new(ID, call, origin.public(), signed_call)
+	}
+
+	/// A test transfer from the given keypair to bob with the value of 999 and tx id of 99.
+	#[cfg(test)]
+	pub fn new_transfer_to(origin: primitives::Pair, dest: primitives::AccountId) -> Self {
+		const ID: u32 = 99;
+
+		let call = runtime::OuterCall::Balances(runtime::balances::Call::Transfer(dest, 999));
+		let signed_call = call.using_encoded(|payload| origin.sign(payload));
+		Self::new(ID, call, origin.public(), signed_call)
 	}
 }
 
@@ -112,18 +154,19 @@ pub enum MessagePayload {
 	/// Initial transactions that the master distributed to the worker are done.
 	InitialPhaseDone,
 	/// The outcome report of the initial phase.
+	///
+	/// First inner values are the _executed_, _forwarded_ and _orphaned_ count respectively.
 	InitialPhaseReport(usize, usize),
 	/// Report the execution of a transaction by a worker back to master.
 	///
 	/// This should only be used if the thread executing a transaction is not the original owner of
 	/// the transaction.
-	Executed(Transaction),
+	WorkerExecuted(TransactionId),
 	/// Report an orphan transaction back to the master.
-	// FIXME: don't report back the entire transaction here; report back an id.
-	Orphan(Transaction),
+	WorkerOrphan(TransactionId),
 	/// Master is signaling the end.
 	Terminate,
-	/// A test payload.
+	/// An arbitrary payload of bytes for testing.
 	#[cfg(test)]
 	Test(Vec<u8>),
 }

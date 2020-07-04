@@ -3,7 +3,16 @@ use std::collections::hash_map::HashMap;
 use std::fmt::Debug;
 use std::sync::{Arc, RwLock};
 
-// FIXME: some means of computing the state root.
+const LOG_TARGET: &'static str = "state";
+
+macro_rules! log {
+	($level:tt, $patter:expr $(, $values:expr)* $(,)?) => {
+		log::$level!(
+			target: crate::LOG_TARGET,
+			$patter $(, $values)*
+		)
+	};
+}
 
 /// Public interface of a state database. It could in principle use any backend.
 pub trait GenericState<K, V, T> {
@@ -59,7 +68,7 @@ impl<T: Clone + Copy + Debug + Eq + PartialEq> TaintT for T {}
 #[derive(Default, Debug, Clone)]
 pub struct StateEntry<V, T> {
 	data: RefCell<V>,
-	taint: T,
+	taint: Option<T>,
 }
 
 // or just use atomic RefCell.
@@ -69,14 +78,21 @@ impl<V: ValueT, T: TaintT> StateEntry<V, T> {
 	pub fn new(value: V, taint: T) -> Self {
 		Self {
 			data: value.into(),
-			taint,
+			taint: Some(taint),
 		}
 	}
 
 	pub fn new_taint(taint: T) -> Self {
 		Self {
-			taint,
+			taint: Some(taint),
 			data: Default::default(),
+		}
+	}
+
+	pub fn new_data(value: V) -> Self {
+		Self {
+			data: value.into(),
+			taint: None,
 		}
 	}
 }
@@ -117,6 +133,15 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 		self.backend.write().unwrap().insert(at.clone(), value);
 	}
 
+	/// Unsafe insert of a value, wiping away the taint value..
+	pub fn unsafe_insert_genesis_value(&self, at: &K, value: V) {
+		log!(trace, "inserting genesis value at {:?} => {:?}", at, value);
+		self.backend
+			.write()
+			.unwrap()
+			.insert(at.clone(), StateEntry::new_data(value));
+	}
+
 	/// Unsafe implementation of read. This will not respect the tainting of the key.
 	pub fn unsafe_read_value(&self, key: &K) -> Option<V> {
 		self.unsafe_read(key).map(|e| e.data.clone().into_inner())
@@ -124,7 +149,7 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 
 	/// Unsafe implementation of read. This will not respect the tainting of the key.
 	pub fn unsafe_read_taint(&self, key: &K) -> Option<T> {
-		self.unsafe_read(key).map(|e| e.taint)
+		self.unsafe_read(key).and_then(|e| e.taint)
 	}
 
 	/// Unsafe implementation of read. This will not respect the tainting of the key.
@@ -135,53 +160,106 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 
 impl<K: KeyT, V: ValueT, T: TaintT> GenericState<K, V, T> for TaintState<K, V, T> {
 	fn read(&self, key: &K, current: T) -> Result<V, T> {
-		// first, see if it exists with a write key.
 		let read_guard = self.backend.read().unwrap();
-		if let Some(entry) = read_guard.get(key) {
-			let owner = entry.taint;
-			if owner == current {
-				Ok(entry.data.borrow().clone())
+
+		let outcome = if let Some(entry) = read_guard.get(key) {
+			let maybe_owner = entry.taint;
+
+			if let Some(owner) = maybe_owner {
+				// 1. if entry exists and it has a taint.
+				if owner == current {
+					Ok(entry.data.borrow().clone())
+				} else {
+					Err(owner)
+				}
 			} else {
-				Err(owner)
+				// 2. the entry exists but it has no taint.
+				drop(read_guard);
+				let mut write_guard = self.backend.write().unwrap();
+				let entry = write_guard
+					.get_mut(key)
+					.expect("Entry has been already checked to exist.");
+				if let Some(owner) = entry.taint {
+					// rare case: someone tainted in the meantime. that bastard someone must be some
+					// other thread.
+					if owner == current {
+						panic!("Current thread cannot be the owner.");
+					} else {
+						Err(owner)
+					}
+				} else {
+					entry.taint = Some(current);
+					Ok(entry.data.borrow().clone())
+				}
 			}
 		} else {
+			// 3. the entry does not exists.
 			drop(read_guard);
-			// acquire a write guard to taint.
 			let mut write_guard = self.backend.write().unwrap();
 			if let Some(entry) = write_guard.get(key) {
-				// This should very rarely happen. We just checked that this key does not exits.
-				// Nonetheless, someone might have sneaked in while we were waiting for a write
-				// lock.
-				let owner = entry.taint;
+				// rare case: someone tainted/created in the meantime. that bastard someone must be
+				// some other thread.
+				let owner = entry
+					.taint
+					.expect("Newly created entry at runtime MUST have a taint.");
 				if owner == current {
 					panic!("Current thread cannot be the owner.");
 				} else {
 					Err(owner)
 				}
 			} else {
-				// we have the write lock and the entry does not exist. Taint and move on.
+				// we have the write lock and the entry does not have taint. Taint and read.
 				let new_entry = <StateEntry<V, T>>::new_taint(current);
 				write_guard.insert(key.clone(), new_entry);
 				Ok(Default::default())
 			}
-		}
+		};
+
+		log!(trace, "reading {:?} => {:?}", key, outcome);
+		outcome
 	}
 
 	fn write(&self, key: &K, value: V, current: T) -> Result<(), T> {
 		let read_guard = self.backend.read().unwrap();
-		if let Some(entry) = read_guard.get(key) {
-			let owner = entry.taint;
-			if owner == current {
-				*entry.data.borrow_mut() = value;
-				Ok(())
+		let outcome = if let Some(entry) = read_guard.get(key) {
+			if let Some(owner) = entry.taint {
+				// 1. if entry exists and it has a taint.
+				if owner == current {
+					*entry.data.borrow_mut() = value;
+					Ok(())
+				} else {
+					Err(owner)
+				}
 			} else {
-				Err(owner)
+				// 2. the entry exists but it has no taint.
+				drop(read_guard);
+				let mut write_guard = self.backend.write().unwrap();
+				let entry = write_guard
+					.get_mut(key)
+					.expect("Entry has been already checked to exist.");
+				if let Some(owner) = entry.taint {
+					// rare case: someone tainted in the meantime. that bastard someone must be some
+					// other thread.
+					if owner == current {
+						panic!("Current thread cannot be the owner.");
+					} else {
+						Err(owner)
+					}
+				} else {
+					// we have the write lock and the entry does not have taint. Taint and write.
+					*entry.data.borrow_mut() = value;
+					entry.taint = Some(current);
+					Ok(())
+				}
 			}
 		} else {
+			// 3. the entry does not exists.
 			drop(read_guard);
 			let mut write_guard = self.backend.write().unwrap();
 			if let Some(entry) = write_guard.get(key) {
-				let owner = entry.taint;
+				let owner = entry
+					.taint
+					.expect("Newly created entry at runtime MUST have a taint.");
 				if owner == current {
 					panic!("Current thread cannot be the owner.");
 				} else {
@@ -192,7 +270,10 @@ impl<K: KeyT, V: ValueT, T: TaintT> GenericState<K, V, T> for TaintState<K, V, T
 				write_guard.insert(key.clone(), new_entry);
 				Ok(())
 			}
-		}
+		};
+
+		log!(trace, "writing {:?} => {:?}", key, outcome);
+		outcome
 	}
 }
 
@@ -326,5 +407,45 @@ mod test_state {
 			results.iter().filter(|r| r.is_err()).count(),
 			(num_threads - 1) as usize
 		);
+	}
+
+	#[test]
+	fn can_have_genesis_values() {
+		let state = TestState::new();
+		state.unsafe_insert(&10u32, StateEntry::new_data(10u32));
+
+		assert_eq!(state.unsafe_read_taint(&10u32), None);
+		assert_eq!(state.unsafe_read_value(&10u32), Some(10u32));
+
+		assert_eq!(state.unsafe_read_taint(&11u32), None);
+		assert_eq!(state.unsafe_read_value(&11u32), None);
+	}
+
+	#[test]
+	fn taints_upon_first_read_of_genesis_values() {
+		let state = TestState::new();
+		state.unsafe_insert(&10u32, StateEntry::new_data(10u32));
+
+		assert_eq!(state.unsafe_read_taint(&10u32), None);
+		assert_eq!(state.unsafe_read_value(&10u32), Some(10u32));
+
+		state.read(&10u32, 1u8).unwrap();
+
+		assert_eq!(state.unsafe_read_taint(&10u32), Some(1));
+		assert_eq!(state.unsafe_read_value(&10u32), Some(10u32));
+	}
+
+	#[test]
+	fn taints_upon_first_write_of_genesis_values() {
+		let state = TestState::new();
+		state.unsafe_insert(&10u32, StateEntry::new_data(10u32));
+
+		assert_eq!(state.unsafe_read_taint(&10u32), None);
+		assert_eq!(state.unsafe_read_value(&10u32), Some(10u32));
+
+		state.write(&10u32, 99u32, 1u8).unwrap();
+
+		assert_eq!(state.unsafe_read_taint(&10u32), Some(1));
+		assert_eq!(state.unsafe_read_value(&10u32), Some(99u32));
 	}
 }

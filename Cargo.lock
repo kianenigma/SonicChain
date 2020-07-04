@@ -135,6 +135,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "colored"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4ffc801dacf156c5854b9df4f425a626539c3a6ef7893cc0c5084a23f0b6c59"
+dependencies = [
+ "atty",
+ "lazy_static",
+ "winapi",
+]
+
+[[package]]
 name = "constant_time_eq"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -279,11 +290,13 @@ name = "multi-threaded"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "colored",
  "env_logger",
  "log",
  "num_cpus",
  "parity-scale-codec",
  "primitives",
+ "rand",
  "runtime",
  "state",
 ]
@@ -467,6 +480,7 @@ name = "runtime"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "log",
  "parity-scale-codec",
  "primitives",
  "state",
@@ -498,6 +512,7 @@ dependencies = [
 name = "state"
 version = "0.1.0"
 dependencies = [
+ "log",
  "primitives",
 ]
 

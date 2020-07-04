@@ -1,4 +1,5 @@
 #![feature(thread_id_value)]
+#![feature(debug_non_exhaustive)]
 
 use log::*;
 use primitives::*;
@@ -8,20 +9,47 @@ use std::sync::Arc;
 use std::thread;
 
 pub mod master;
-pub mod message;
 pub mod pool;
+mod test;
+pub mod tx_distribution;
+pub mod types;
 pub mod worker;
 
 use master::*;
-use message::*;
+use pool::*;
+use tx_distribution::*;
+use types::*;
 use worker::*;
 
+/// The final state type of the application.
 pub type State = runtime::RuntimeState;
+/// The final pool type of the application.
+pub type Pool = VecPool<Transaction>;
+
+// FIXME: block_construction() and block_validation() interface.
+// FIXME: some means of computing the state root, or else comparing the two states.
+// FIXME: Start thinking about test scenarios.
+// FIXME: add algorithm to do something based on the static annotations.
+// FIXME: new module to generate random transactions.
+// TODO: A bank example with orphans?
+
+#[macro_export]
+macro_rules! log_target {
+	($target:tt, $level:tt, $patter:expr $(, $values:expr)* $(,)?) => {
+		log::$level!(
+			target: $target,
+			$patter $(, $values)*
+		)
+	};
+}
 
 /// Spawn `n` new worker threads.
 ///
 /// This _should only be called once_.
-fn spawn_workers(n: usize) -> Master {
+fn spawn_workers<P: TransactionPool<Transaction>, D: Distributer>(
+	n: usize,
+	test_run: bool,
+) -> Master<P, D> {
 	// One queue for all workers to send to master.
 	let (workers_to_master_tx, workers_to_master_rx) = channel();
 
@@ -39,8 +67,6 @@ fn spawn_workers(n: usize) -> Master {
 
 		// one channel for other workers to send to this worker.
 		let (from_others_tx, from_others_rx) = channel();
-		let predicted_id = (i + 1) as ThreadId + master_id;
-		to_workers.insert(predicted_id, from_others_tx);
 
 		let worker_handle = thread::Builder::new()
 			.name(format!("Worker#{}", i))
@@ -54,30 +80,29 @@ fn spawn_workers(n: usize) -> Master {
 					from_others_rx,
 				);
 
-				// this id must be equal to what we predicted.
-				assert_eq!(predicted_id, worker.id);
-
-				// wait for the master to send you the btree-map of the send queue to all other threads.
+				// wait for the master to send you the btree-map of the send queue to all other
+				// threads.
 				match worker.from_master.recv().unwrap().payload {
 					MessagePayload::FinalizeSetup(data) => worker.to_others = data,
 					_ => panic!("Received unexpected message"),
 				};
 
-				info!("Worker initialized. Parking self.");
+				log::info!("Worker initialized. Parking self.");
 
 				// master will initially park the thread in initialization, and unpark it once done.
 				thread::park();
 
 				// run
-				#[cfg(test)]
-				worker.test_run();
-
-				#[cfg(not(test))]
-				worker.run();
+				if test_run {
+					worker.test_run();
+				} else {
+					worker.run();
+				}
 			})
 			.expect("Failed to spawn a new worker thread.");
 
 		let worker_id = worker_handle.thread().id().as_u64().into();
+		to_workers.insert(worker_id, from_others_tx);
 		let handle = WorkerHandle::new(master_to_worker_tx, worker_handle);
 		master.workers.insert(worker_id, handle);
 	}
@@ -96,51 +121,42 @@ fn spawn_workers(n: usize) -> Master {
 	master
 }
 
-fn main() {
+fn init_logger() {
+	use colored::*;
 	use std::io::Write;
-	env_logger::Builder::new()
+
+	let _ = env_logger::Builder::from_env("RUST_LOG")
 		.format(|buf, record| {
 			writeln!(
 				buf,
-				"{} [{}][{}] - {}",
-				chrono::Local::now().format("%Y-%m-%dT%H:%M:%S"),
-				record.level(),
-				thread::current().name().unwrap_or("Unnamed thread."),
+				"{} {} [{} ({})] - {}",
+				chrono::Local::now()
+					.format("%Y-%m-%dT%H:%M:%S")
+					.to_string()
+					.italic()
+					.dimmed(),
+				match record.level() {
+					Level::Error => "Error".red(),
+					Level::Warn => "Warn".yellow(),
+					Level::Info => "Info".green(),
+					Level::Debug => "Debug".magenta(),
+					Level::Trace => "Trace".blue(),
+				}
+				.bold(),
+				thread::current().name().unwrap_or("Unnamed thread.").bold(),
+				thread::current().id().as_u64(),
 				record.args()
 			)
 		})
-		.filter(None, LevelFilter::Info)
-		.init();
+		.try_init();
+}
+
+fn main() {
+	init_logger();
+
 	let num_cpus = num_cpus::get();
-	let master = spawn_workers(num_cpus - 1);
+	let master = spawn_workers::<Pool, RoundRobin>(num_cpus - 1, false);
 
 	// master.run().
 	master.join_all().unwrap();
-}
-
-#[cfg(test)]
-mod main_tests {
-	use super::*;
-
-	#[test]
-	fn spawn_threads_works() {
-		let master = spawn_workers(4);
-		std::thread::sleep(std::time::Duration::from_millis(500));
-		assert_eq!(master.workers.len(), 4);
-
-		// unpark all workers. Then they will run their test_run automatically.
-		master.unpark_all();
-
-		// start the master as well.
-		master.run_test();
-
-		// assert to join all okay
-		assert!(master.join_all().is_ok())
-	}
-
-	#[test]
-	#[ignore]
-	fn workers_report_initial_phase_done() {
-		todo!()
-	}
 }

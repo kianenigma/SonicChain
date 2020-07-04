@@ -17,3 +17,7 @@ num_cpus = "1.13.0"
 log = "0.4.8"
 env_logger = "0.7.1"
 chrono = "0.4.11"
+colored = "1.9"
+
+[dev-dependencies]
+rand = "0.7.3"

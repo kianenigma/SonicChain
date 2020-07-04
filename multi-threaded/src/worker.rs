@@ -1,9 +1,9 @@
 use crate::{
-	message::{ExecutionStatus, Message, MessagePayload, Transaction},
+	types::{ExecutionStatus, Message, MessagePayload, Transaction},
 	State,
 };
-use primitives::ThreadId;
-use runtime::{DispatchError, DispatchResult, Runtime};
+use primitives::{ThreadId, TransactionId};
+use runtime::{DispatchError, DispatchResult, WorkerRuntime};
 use std::collections::BTreeMap;
 use std::{
 	sync::{
@@ -13,11 +13,25 @@ use std::{
 	thread,
 };
 
-/// The execution status of a transaction.
+const LOG_TARGET: &'static str = "worker";
+
+macro_rules! log {
+	($level:tt, $patter:expr $(, $values:expr)* $(,)?) => {
+		log::$level!(
+			target: LOG_TARGET,
+			$patter $(, $values)*
+		)
+	};
+}
+
+/// The execution outcome of a transaction.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum ExecutionOutcome {
+	/// This transaction was executed successfully with the contained dispatch result.
 	Executed(DispatchResult),
+	/// This transaction was forwarded to another worker thread with the given thread id.
 	Forwarded(ThreadId),
+	/// This transaction was forwarded to master as Orphan.
 	ForwardedToMaster,
 }
 
@@ -28,9 +42,11 @@ pub struct Worker {
 	/// The id of the master thread.
 	pub master_id: ThreadId,
 	/// Shared state.
+	///
+	/// Note that the worker should typically only ever access the state through the runtime.
 	pub state: Arc<State>,
 	/// The runtime
-	pub runtime: Runtime,
+	pub runtime: WorkerRuntime,
 	/// Channel to send messages to master.
 	pub to_master: Sender<Message>,
 	/// Channel to receive data from the master.
@@ -51,9 +67,7 @@ impl Worker {
 		from_master: Receiver<Message>,
 		from_others: Receiver<Message>,
 	) -> Self {
-		// TODO: consider removing access to state from worker. Worker should only ever access state
-		// from the runtime interface that it has.
-		let runtime = Runtime::new(state.clone(), id);
+		let runtime = WorkerRuntime::new(state.clone(), id);
 		Self {
 			id,
 			master_id,
@@ -85,6 +99,7 @@ impl Worker {
 	/// worker incoming queue until termination.
 	pub fn run(self) {
 		// execute everything from master.
+		log!(info, "Starting phase `deplete_master_queue()`.");
 		self.deplete_master_queue();
 
 		// try and read termination signal from master, else execute anything from other workers.
@@ -97,7 +112,10 @@ impl Worker {
 			}
 			if let Ok(Message { payload, from: _ }) = self.from_others.try_recv() {
 				match payload {
-					MessagePayload::Transaction(tx) => self.execute_or_forward(tx),
+					MessagePayload::Transaction(mut tx) => {
+						tx.exec_status = ExecutionStatus::Forwarded;
+						self.execute_or_forward(tx)
+					}
 					_ => panic!("Unexpected message payload"),
 				};
 			}
@@ -119,20 +137,20 @@ impl Worker {
 					let outcome = self.execute_or_forward(tx.clone());
 					match outcome {
 						ExecutionOutcome::Executed(_) => executed += 1,
-						ExecutionOutcome::Forwarded(_) => forwarded += 1,
-						ExecutionOutcome::ForwardedToMaster => {
-							panic!("Cannot forward to master in the initial phase")
+						ExecutionOutcome::Forwarded(_) | ExecutionOutcome::ForwardedToMaster => {
+							forwarded += 1
 						}
 					}
-					log::info!("Execution of {:?} => {:?}", tx, outcome);
 				}
 				MessagePayload::InitialPhaseDone => break,
 				_ => panic!("Unexpected message payload."),
 			};
 		}
 
+		let message = MessagePayload::InitialPhaseReport(executed, forwarded).into();
+		log!(info, "Sending report {:?}", message);
 		self.to_master
-			.send(MessagePayload::InitialPhaseReport(executed, forwarded).into())
+			.send(message)
 			.expect("Sending to master cannot fail; qed");
 	}
 
@@ -143,65 +161,87 @@ impl Worker {
 	pub(crate) fn execute_transaction(&self, tx: Transaction) -> runtime::DispatchResult {
 		let call = tx.function;
 		let origin = tx.signature.0;
-		runtime::Dispatchable::dispatch(&call, &self.runtime, origin)
+		self.runtime.dispatch(&call, origin)
 	}
 
 	/// Tries to execute the transaction, else forward it to either another worker who owns it, or
 	/// the master of the transaction has already been forwarded.
 	///
+	/// This also reports to master if a transaction has been forwarded to us and we successfully
+	/// executed it.
+	///
+	/// NOTE: in case this forwards a transaction to another thread, it does not update the
+	/// exec_status field. The receiver should do so.
+	///
 	/// This can this can never fail. Only errors will be communication, in which case it panics.
-	pub(crate) fn execute_or_forward(&self, mut tx: Transaction) -> ExecutionOutcome {
+	pub(crate) fn execute_or_forward(&self, tx: Transaction) -> ExecutionOutcome {
+		// keep tx id because we don't need the rest, move the tx object to the function.
+		let tid = tx.id;
+		let exec_status = tx.exec_status;
 		let execution_outcome = self.execute_transaction(tx.clone());
-		match execution_outcome {
+
+		let forward_to_master = |tid: TransactionId| -> ExecutionOutcome {
+			let msg = MessagePayload::WorkerOrphan(tid).into();
+			self.to_master
+				.send(msg)
+				.expect("Send to master should work; qed.");
+			ExecutionOutcome::ForwardedToMaster
+		};
+
+		let forward_to_worker = |tx: Transaction, wid: ThreadId| -> ExecutionOutcome {
+			let msg = MessagePayload::Transaction(tx).into();
+			self.to_others
+				.get(&wid)
+				.expect("Must have queue to all other workers; qed.")
+				.send(msg)
+				.expect("Send to others should work; qed.");
+			ExecutionOutcome::Forwarded(wid)
+		};
+
+		let report_execution = |tid: TransactionId| {
+			let msg = MessagePayload::WorkerExecuted(tid).into();
+			self.to_master
+				.send(msg)
+				.expect("Send to master should work; qed.");
+		};
+
+		let final_outcome = match execution_outcome {
 			Err(err) => {
-				match (err, tx.exec_status) {
-					(DispatchError::Tainted(owner), ExecutionStatus::Initial) => {
-						// forward it to the owner.
-						tx.exec_status = ExecutionStatus::Forwarded;
-						let msg = MessagePayload::Transaction(tx).into();
-						self.to_others
-							.get(&owner)
-							.expect("Must have queue to all other workers; qed.")
-							.send(msg)
-							.expect("Send to others should work; qed.");
-						ExecutionOutcome::Forwarded(owner)
-					}
-					(DispatchError::Tainted(_), ExecutionStatus::Forwarded) => {
-						// forward it to the master as an orphan.
-						let msg = MessagePayload::Orphan(tx).into();
-						self.to_master
-							.send(msg)
-							.expect("Send to master should work; qed.");
-						ExecutionOutcome::ForwardedToMaster
-					}
-					(DispatchError::LogicError(why), _) => {
-						// Fine. We executed this, and it was a logical error. if transaction
-						// belonged to use initially, do nothing. Else, report to master that we've
-						// executed it.
-						if tx.exec_status == ExecutionStatus::Forwarded {
-							let msg = MessagePayload::Executed(tx).into();
-							self.to_master
-								.send(msg)
-								.expect("Send to master should work; qed.");
+				match (err, exec_status) {
+					(DispatchError::Tainted(owner, corrupt), ExecutionStatus::Initial) => {
+						if corrupt {
+							forward_to_master(tid)
+						} else {
+							forward_to_worker(tx.clone(), owner)
 						}
+					}
+					(DispatchError::Tainted(_, _), ExecutionStatus::Forwarded) => {
+						forward_to_master(tx.id)
+					}
+					(DispatchError::LogicError(why), ExecutionStatus::Initial) => {
+						// logical error and initial, all good, do nothing.
+						ExecutionOutcome::Executed(Err(DispatchError::LogicError(why)))
+					}
+					(DispatchError::LogicError(why), ExecutionStatus::Forwarded) => {
+						// it was an error and it was forwarded. Report to master.
+						report_execution(tid);
 						ExecutionOutcome::Executed(Err(DispatchError::LogicError(why)))
 					}
 				}
 			}
 			Ok(_) => {
-				if tx.exec_status == ExecutionStatus::Forwarded {
-					let msg = MessagePayload::Executed(tx).into();
-					self.to_master
-						.send(msg)
-						.expect("Send to master should work; qed.");
+				if exec_status == ExecutionStatus::Forwarded {
+					report_execution(tid)
 				}
 				ExecutionOutcome::Executed(Ok(()))
 			}
-		}
+		};
+
+		log!(trace, "execute or forward {:?} => {:?}", tx, final_outcome);
+		final_outcome
 	}
 
 	/// A run method only used for testing.
-	#[cfg(test)]
 	pub fn test_run(self) {
 		// send this to master.
 		self.to_master
@@ -218,7 +258,7 @@ impl Worker {
 		self.to_others.iter().for_each(|(_, sender)| {
 			sender
 				.send(Message::new_from_thread(
-					crate::message::MessagePayload::Test(vec![self.id as u8]),
+					crate::types::MessagePayload::Test(vec![self.id as u8]),
 				))
 				.unwrap();
 		});
@@ -228,7 +268,7 @@ impl Worker {
 		while num_received != (num_workers - 1) {
 			let message = self.from_others.recv().unwrap();
 			let Message { payload, from } = message;
-			println!("Received {:?} from {:?}", payload, from);
+			log!(debug, "Received {:?} from {:?}", payload, from);
 			assert!(matches!(payload, MessagePayload::Test(x) if x == vec![from as u8]));
 			num_received += 1;
 		}
@@ -238,10 +278,8 @@ impl Worker {
 #[cfg(test)]
 mod worker_test {
 	use super::*;
-	use parity_scale_codec::Encode;
 	use primitives::*;
-	use runtime::balances::storage::BalanceOf;
-	use runtime::OuterCall;
+	use runtime::balances::BalanceOf;
 	use std::matches;
 	use std::sync::mpsc::channel;
 
@@ -261,16 +299,7 @@ mod worker_test {
 	}
 
 	fn test_tx(origin: Pair) -> (Transaction, AccountId) {
-		// FIXME: use new_test from impl Transaction.
-		let call = OuterCall::Balances(runtime::balances::Call::Transfer(
-			testing::bob().public(),
-			999,
-		));
-		let signed_call = call.using_encoded(|payload| origin.sign(payload));
-		(
-			Transaction::new(call, origin.public(), signed_call),
-			origin.public(),
-		)
+		(Transaction::new_transfer(origin), testing::alice().public())
 	}
 
 	#[test]
@@ -278,6 +307,7 @@ mod worker_test {
 		let (worker, _, master_rx) = test_worker();
 		let alice = testing::alice();
 		let (tx, alice) = test_tx(alice);
+		let master_runtime = runtime::MasterRuntime::new(Arc::clone(&worker.state), 0);
 
 		// because alice has no funds yet.
 		assert!(matches!(
@@ -286,7 +316,7 @@ mod worker_test {
 		));
 
 		// give alice some funds.
-		BalanceOf::write(&worker.runtime, alice, 999).unwrap();
+		BalanceOf::write(&master_runtime, alice, 999).unwrap();
 
 		// now alice has some funds.
 		assert!(matches!(
@@ -303,7 +333,9 @@ mod worker_test {
 		assert_eq!(
 			worker
 				.state
-				.unsafe_read_taint(&<BalanceOf<Runtime>>::key_for(testing::alice().public(),))
+				.unsafe_read_taint(&<BalanceOf<WorkerRuntime>>::key_for(
+					testing::alice().public(),
+				))
 				.unwrap(),
 			worker.id
 		);
@@ -311,7 +343,9 @@ mod worker_test {
 		assert_eq!(
 			worker
 				.state
-				.unsafe_read_taint(&<BalanceOf<Runtime>>::key_for(testing::bob().public(),))
+				.unsafe_read_taint(&<BalanceOf<WorkerRuntime>>::key_for(
+					testing::bob().public(),
+				))
 				.unwrap(),
 			worker.id
 		);
@@ -324,21 +358,19 @@ mod worker_test {
 		let (tx, alice) = test_tx(alice);
 
 		// manually taint the storage item of bob to some other thread.
-		let alice_key = <BalanceOf<Runtime>>::key_for(alice);
+		let alice_key = <BalanceOf<WorkerRuntime>>::key_for(alice);
 		worker
 			.state
 			.unsafe_insert(&alice_key, state::StateEntry::new_taint(OTHER_WORKER));
 
 		assert!(matches!(
-			dbg!(worker.execute_or_forward(tx)),
+			worker.execute_or_forward(tx.clone()),
 			ExecutionOutcome::Forwarded(x) if x == OTHER_WORKER
 		));
 
 		let incoming = other_rx.recv().unwrap();
 		assert_eq!(incoming.from, worker.id);
-		assert!(
-			matches!(incoming.payload, MessagePayload::Transaction(tx) if tx.exec_status == ExecutionStatus::Forwarded)
-		)
+		assert!(matches!(incoming.payload, MessagePayload::Transaction(itx) if itx.id == tx.id))
 	}
 
 	#[test]
@@ -348,8 +380,8 @@ mod worker_test {
 		let (mut tx, alice) = test_tx(alice);
 		tx.exec_status = ExecutionStatus::Forwarded;
 
-		// manually taint the storage item of bob to some other thread.
-		let alice_key = <BalanceOf<Runtime>>::key_for(alice);
+		// manually taint the storage item of alice to some other thread.
+		let alice_key = <BalanceOf<WorkerRuntime>>::key_for(alice);
 		worker
 			.state
 			.unsafe_insert(&alice_key, state::StateEntry::new_taint(OTHER_WORKER));
@@ -361,7 +393,7 @@ mod worker_test {
 
 		let incoming = master_rx.recv().unwrap();
 		assert_eq!(incoming.from, worker.id);
-		assert!(matches!(incoming.payload, MessagePayload::Orphan(_)))
+		assert!(matches!(incoming.payload, MessagePayload::WorkerOrphan(_)))
 	}
 
 	#[test]
@@ -381,6 +413,6 @@ mod worker_test {
 
 		// master should have received a notification now.
 		let msg = master_rx.recv().unwrap();
-		assert!(matches!(msg.payload, MessagePayload::Executed(_)));
+		assert!(matches!(msg.payload, MessagePayload::WorkerExecuted(_)));
 	}
 }

@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 primitives = { path = "../primitives" }
+log = "0.4.8"

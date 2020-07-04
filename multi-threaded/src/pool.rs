@@ -1,3 +1,6 @@
+use crate::types;
+use std::iter::*;
+
 /// An ordered. transaction pool.
 pub trait TransactionPool<Tx> {
 	/// Create a new transaction pool.
@@ -15,6 +18,27 @@ pub trait TransactionPool<Tx> {
 	///
 	/// Panics if index > len.
 	fn insert(&mut self, index: usize, tx: Tx);
+
+	/// Remove the first element that matches the criteria from the pool, returning the removed
+	/// element.
+	///
+	/// Will return None if no element matches.
+	fn remove(&mut self, search: impl Fn(&Tx) -> bool) -> Option<Tx> {
+		// NOTE: this will not work with .map(). Interesting, neh? closure seemingly consumes self
+		// or something of that sort.
+		match self.get(search) {
+			Some((index, _)) => Some(self.remove_at(index)),
+			None => None,
+		}
+	}
+
+	/// Remove an element at a specific index, returning the removed element.
+	///
+	/// Will panic if index is out of bound.
+	fn remove_at(&mut self, at: usize) -> Tx;
+
+	/// Remove all.
+	fn clear(&mut self);
 
 	/// Current count of transaction
 	fn len(&self) -> usize;
@@ -34,6 +58,12 @@ pub trait TransactionPool<Tx> {
 	///
 	/// It returns a mutable reference to the given transaction, and its index.
 	fn get_mut(&mut self, search: impl Fn(&Tx) -> bool) -> Option<(usize, &mut Tx)>;
+
+	/// Iterate without consuming.
+	fn iter<'a>(&'a self) -> PoolIter<'a, Tx>;
+
+	/// Mutable iterator without consuming.
+	fn iter_mut<'a>(&'a mut self) -> PoolIterMut<'a, Tx>;
 }
 
 /// A transaction pool implemented by a vector.
@@ -42,7 +72,53 @@ pub struct VecPool<Tx> {
 	inner: Vec<Tx>,
 }
 
-impl<Tx: Clone> TransactionPool<Tx> for VecPool<Tx> {
+impl<Tx> IntoIterator for VecPool<Tx> {
+	type IntoIter = std::vec::IntoIter<Tx>;
+	type Item = Tx;
+	fn into_iter(self) -> Self::IntoIter {
+		self.inner.into_iter()
+	}
+}
+
+pub struct PoolIter<'a, Tx>(std::slice::Iter<'a, Tx>);
+
+impl<'a, Tx> IntoIterator for &'a VecPool<Tx> {
+	type IntoIter = PoolIter<'a, Tx>;
+	type Item = &'a Tx;
+
+	fn into_iter(self) -> Self::IntoIter {
+		PoolIter(self.inner.iter())
+	}
+}
+
+impl<'a, Tx> Iterator for PoolIter<'a, Tx> {
+	type Item = &'a Tx;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		self.0.next()
+	}
+}
+
+pub struct PoolIterMut<'a, Tx>(std::slice::IterMut<'a, Tx>);
+
+impl<'a, Tx> IntoIterator for &'a mut VecPool<Tx> {
+	type IntoIter = PoolIterMut<'a, Tx>;
+	type Item = &'a mut Tx;
+
+	fn into_iter(self) -> Self::IntoIter {
+		PoolIterMut(self.inner.iter_mut())
+	}
+}
+
+impl<'a, Tx> Iterator for PoolIterMut<'a, Tx> {
+	type Item = &'a mut Tx;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		self.0.next()
+	}
+}
+
+impl<Tx: Clone + types::VerifiableTransaction> TransactionPool<Tx> for VecPool<Tx> {
 	fn new() -> Self {
 		Self {
 			inner: Default::default(),
@@ -56,11 +132,25 @@ impl<Tx: Clone> TransactionPool<Tx> for VecPool<Tx> {
 	}
 
 	fn push_back(&mut self, tx: Tx) {
+		if !tx.verify() {
+			panic!("Attempted to insert invalid transaction to the pool.")
+		}
 		self.inner.push(tx);
 	}
 
 	fn insert(&mut self, index: usize, tx: Tx) {
+		if !tx.verify() {
+			panic!("Attempted to insert invalid transaction to the pool.")
+		}
 		self.inner.insert(index, tx);
+	}
+
+	fn remove_at(&mut self, at: usize) -> Tx {
+		self.inner.remove(at)
+	}
+
+	fn clear(&mut self) {
+		self.inner.clear();
 	}
 
 	fn len(&self) -> usize {
@@ -82,6 +172,14 @@ impl<Tx: Clone> TransactionPool<Tx> for VecPool<Tx> {
 	fn get_mut(&mut self, search: impl Fn(&Tx) -> bool) -> Option<(usize, &mut Tx)> {
 		self.inner.iter_mut().enumerate().find(|(_, tx)| search(tx))
 	}
+
+	fn iter<'a>(&'a self) -> PoolIter<'a, Tx> {
+		self.into_iter()
+	}
+
+	fn iter_mut<'a>(&'a mut self) -> PoolIterMut<'a, Tx> {
+		self.into_iter()
+	}
 }
 
 #[cfg(test)]
@@ -100,23 +198,29 @@ mod vecpool_tests {
 		}
 	}
 
+	impl types::VerifiableTransaction for TestTransaction {
+		fn verify(&self) -> bool {
+			self.id % 2 == 0
+		}
+	}
+
 	type Pool = VecPool<TestTransaction>;
 
 	#[test]
 	fn get_works() {
 		let mut pool = Pool::new();
 
-		for i in 0..10 {
+		for i in (0..10).step_by(2) {
 			pool.push_back(TestTransaction::new(i, i));
 		}
 
 		assert_eq!(
-			pool.get(|t| t.id == 7),
+			pool.get(|t| t.id == 8),
 			Some((
-				7,
+				4,
 				&TestTransaction {
-					id: 7,
-					signature: 7
+					id: 8,
+					signature: 8
 				}
 			)),
 		)
@@ -126,14 +230,72 @@ mod vecpool_tests {
 	fn get_mut_works() {
 		let mut pool = Pool::new();
 
-		for i in 0..10 {
+		for i in (0..10).step_by(2) {
 			pool.push_back(TestTransaction::new(i, i));
 		}
 
-		let (_, mut tx_mut) = pool.get_mut(|t| t.id == 7).unwrap();
+		let (_, mut tx_mut) = pool.get_mut(|t| t.id == 8).unwrap();
 		tx_mut.signature = 999;
 
-		let (_, tx) = pool.get(|t| t.id == 7).unwrap();
+		let (_, tx) = pool.get(|t| t.id == 8).unwrap();
 		assert_eq!(tx.signature, 999);
+	}
+
+	#[test]
+	fn iter_works() {
+		let mut pool = Pool::new();
+
+		for i in (0..6).step_by(2) {
+			pool.push_back(TestTransaction::new(i, i));
+		}
+
+		let mut iter = pool.iter();
+		assert_eq!(iter.next().map(|t| t.id), Some(0));
+		assert_eq!(iter.next().map(|t| t.id), Some(2));
+		assert_eq!(iter.next().map(|t| t.id), Some(4));
+		assert_eq!(iter.next(), None);
+	}
+
+	#[test]
+	fn into_iter_works() {
+		let mut pool = Pool::new();
+
+		for i in (0..6).step_by(2) {
+			pool.push_back(TestTransaction::new(i, i));
+		}
+
+		let mut iter = pool.into_iter();
+		assert_eq!(iter.next().map(|t| t.id), Some(0));
+		assert_eq!(iter.next().map(|t| t.id), Some(2));
+		assert_eq!(iter.next().map(|t| t.id), Some(4));
+		assert_eq!(iter.next(), None);
+	}
+
+	#[test]
+	fn iter_mut_works() {
+		let mut pool = Pool::new();
+
+		for i in (0..10).step_by(2) {
+			pool.push_back(TestTransaction::new(i, i));
+		}
+
+		pool.iter_mut().for_each(|mut t| t.signature += 1);
+		(0..10)
+			.step_by(2)
+			.for_each(|i| assert_eq!(pool.get(|t| t.id == i).unwrap().1.signature, i + 1))
+	}
+
+	#[test]
+	#[should_panic(expected = "Attempted to insert invalid transaction to the pool.")]
+	fn insert_invalid_will_fail() {
+		let mut pool = Pool::new();
+		pool.push_back(TestTransaction::new(1, 0));
+	}
+
+	#[test]
+	#[should_panic(expected = "Attempted to insert invalid transaction to the pool.")]
+	fn insert_invalid_will_fail_2() {
+		let mut pool = Pool::new();
+		pool.insert(0, TestTransaction::new(1, 0));
 	}
 }
