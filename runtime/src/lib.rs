@@ -17,6 +17,7 @@ pub mod storage_macros;
 
 const LOG_TARGET: &'static str = "runtime";
 
+#[macro_export]
 macro_rules! log {
 	($level:tt, $patter:expr $(, $values:expr)* $(,)?) => {
 		log::$level!(
@@ -26,15 +27,74 @@ macro_rules! log {
 	};
 }
 
+#[macro_export]
+macro_rules! decl_tx {
+	(
+		$(
+			fn $name:ident(
+				$runtime:ident,
+				$origin:ident
+				$(, $arg_name:ident : $arg_value:ty)* $(,)?
+			) {  $( $impl:tt )* }
+		)*
+
+	) => {
+		$(
+			fn $name<
+				R: $crate::ModuleRuntime
+			>(
+				$runtime: &R,
+				$origin: $crate::AccountId
+				$(, $arg_name: $arg_value)*
+			) -> $crate::DispatchResult {
+				$( $impl )*
+			}
+		)*
+	};
+}
+
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum DispatchError {
 	/// The dispatch attempted at modifying a state key which has been tainted.
 	///
 	/// The second element will be true if this failure should cause the entire execution to stop,
 	/// because the state is now corrupt.
+	///
+	/// A transaction logic should only set this true to enforce the transaction to be forwarded to
+	/// master as an orphan afterwards. This generally means: If a transaction DOES access a key k1,
+	/// either by reading or writing, and fails on a consecutive access to k2. In this case, there
+	/// is no point in sending this to whoever owns k2, because they most certainly do NOT own k1.
+	/// Hence, in such cases, the transaction logic should enforce a the transaction to be forwarded
+	/// to master.
 	Tainted(ThreadId, bool),
 	/// The transaction had a logical error.
 	LogicError(&'static str),
+}
+
+/// Extension trait to convert the result of storage operations to another result with
+/// `DispatchError` in the `Err` variant.
+trait UnwrapStorageOp<T> {
+	/// Map to `Tainted(t, false)`.
+	///
+	/// This basically means that the transaction need to be forwarded to another thread. This only
+	/// makes sense on the first storage operation of the transaction.
+	fn or_forward(self) -> Result<T, DispatchError>;
+
+	/// Map to `Tainted(t, true)`.
+	///
+	/// This basically means that the transaction need to be forwarded to master as orphan. This
+	/// only makes sense on the first storage operation of the transaction.
+	fn or_orphan(self) -> Result<T, DispatchError>;
+}
+
+impl<T> UnwrapStorageOp<T> for Result<T, primitives::ThreadId> {
+	fn or_forward(self) -> Result<T, DispatchError> {
+		self.map_err(|t| DispatchError::Tainted(t, false))
+	}
+
+	fn or_orphan(self) -> Result<T, DispatchError> {
+		self.map_err(|t| DispatchError::Tainted(t, true))
+	}
 }
 
 /// The result of a dispatch.
@@ -46,15 +106,20 @@ pub type ValidationResult = Result<Vec<primitives::Key>, ()>;
 /// Anything that can be dispatched.
 ///
 /// Both the inner call and the outer call will be of type Dispatchable.
-pub trait Dispatchable<R: GenericRuntime> {
+pub trait Dispatchable<R: ModuleRuntime> {
 	/// Dispatch this dispatchable.
-	fn dispatch(&self, runtime: &R, origin: AccountId) -> DispatchResult;
+	///
+	/// This consumes the call.
+	fn dispatch<T: DispatchPermission>(self, runtime: &R, origin: AccountId) -> DispatchResult;
 
 	/// Validate this dispatchable.
 	///
 	/// This should be cheap and return potentially some useful metadata about the dispatchable.
 	fn validate(&self, _: &R, _: AccountId) -> ValidationResult;
 }
+
+/// Marker trait for those who have permission to dispatch.
+pub trait DispatchPermission {}
 
 /// The outer call of the runtime.
 ///
@@ -64,11 +129,11 @@ pub enum OuterCall {
 	Balances(balances::Call),
 }
 
-impl<R: GenericRuntime> Dispatchable<R> for OuterCall {
-	fn dispatch(&self, runtime: &R, origin: AccountId) -> DispatchResult {
+impl<R: ModuleRuntime> Dispatchable<R> for OuterCall {
+	fn dispatch<T: DispatchPermission>(self, runtime: &R, origin: AccountId) -> DispatchResult {
 		match self {
 			OuterCall::Balances(inner_call) => {
-				<balances::Call as Dispatchable<R>>::dispatch(inner_call, &runtime, origin)
+				<balances::Call as Dispatchable<R>>::dispatch::<T>(inner_call, &runtime, origin)
 			}
 		}
 	}
@@ -83,7 +148,7 @@ impl<R: GenericRuntime> Dispatchable<R> for OuterCall {
 }
 
 /// Interface of the runtime that will be available to each module.
-pub trait GenericRuntime {
+pub trait ModuleRuntime {
 	/// If this runtime is restricted or not. If true, the storage access will be subject to
 	/// tainting. Else, all access' are guaranteed to go well.
 	const LIMITED: bool;
@@ -101,9 +166,9 @@ pub trait GenericRuntime {
 	fn mutate(&self, key: &Key, update: impl Fn(&mut Value) -> ()) -> Result<(), ThreadId>;
 }
 
-/// A runtime.
+/// A runtime that should be used with worker thread.
 ///
-/// The main functionality of the runtime is that it orchestrates the execution of transactions.
+/// This will cache writes and only applies them to storage at the very end.
 pub struct WorkerRuntime {
 	/// The state pointer.
 	state: Arc<RuntimeState>,
@@ -112,6 +177,8 @@ pub struct WorkerRuntime {
 	/// Id of the thread.
 	id: ThreadId,
 }
+
+impl DispatchPermission for WorkerRuntime {}
 
 impl WorkerRuntime {
 	/// Create a new runtime.
@@ -124,27 +191,29 @@ impl WorkerRuntime {
 	}
 
 	/// Dispatch a call.
-	// TODO: force worker to call this from this runtime, not via the trait.
-	pub fn dispatch(&self, call: &OuterCall, origin: AccountId) -> DispatchResult {
+	///
+	/// Note that this will use a fresh new cache for the dispatch, and then
+	pub fn dispatch(&self, call: OuterCall, origin: AccountId) -> DispatchResult {
 		// the cache must always be empty at the beginning of a dispatch.
 		debug_assert_eq!(self.cache.borrow().keys().len(), 0);
 
+		log!(trace, "worker runtime executing {:?}. ", call);
 		// execute
-		let dispatch_result = <OuterCall as Dispatchable<Self>>::dispatch(call, self, origin);
-
-		// only commit if result is ok, or if the error is logic error.
-		match dispatch_result {
-			Ok(_) | Err(DispatchError::LogicError(_)) => self.commit_cache(),
-			_ => (),
-		};
+		let dispatch_result =
+			<OuterCall as Dispatchable<Self>>::dispatch::<Self>(call, self, origin);
 
 		log!(
 			trace,
-			"worker runtime executed {:?}. result is {:?}. cached writes {}",
-			call,
+			"result is {:?}. Cached writes {}.",
 			dispatch_result,
 			self.cache.borrow().len()
 		);
+
+		// only commit if result is ok. Note that logic error will also ignore all writes.
+		match dispatch_result {
+			Ok(_) => self.commit_cache(),
+			_ => (),
+		};
 
 		// clear the cache anyhow.
 		self.cache.borrow_mut().clear();
@@ -153,7 +222,8 @@ impl WorkerRuntime {
 
 	/// commit the cache to the persistent state.
 	pub fn commit_cache(&self) {
-		// TODO: we can use unsafe insert here; we know that we own this shit
+		// FIXME: we can use unsafe insert here; we know that we own this shit. For the real
+		// benchmarks, change this.
 		self.cache.borrow().iter().for_each(|(k, v)| {
 			self.state
 				.write(k, v.clone(), self.id)
@@ -167,7 +237,7 @@ impl WorkerRuntime {
 	}
 }
 
-impl GenericRuntime for WorkerRuntime {
+impl ModuleRuntime for WorkerRuntime {
 	const LIMITED: bool = true;
 
 	fn thread_id(&self) -> ThreadId {
@@ -205,11 +275,19 @@ impl GenericRuntime for WorkerRuntime {
 	}
 }
 
+/// A runtime that can be used by the master thread.
+///
+/// This runtime will not really care about thread ids and tainiting and eagerly read/write from/to
+/// the storage.
 #[derive(Debug, Default)]
 pub struct MasterRuntime {
-	state: Arc<RuntimeState>,
-	id: ThreadId,
+	/// The state.
+	pub state: Arc<RuntimeState>,
+	/// The thread id.
+	pub id: ThreadId,
 }
+
+impl DispatchPermission for MasterRuntime {}
 
 impl MasterRuntime {
 	/// Create new master runtime.
@@ -218,8 +296,8 @@ impl MasterRuntime {
 	}
 
 	/// Dispatch a call.
-	pub fn dispatch(&self, call: &OuterCall, origin: AccountId) -> DispatchResult {
-		<OuterCall as Dispatchable<Self>>::dispatch(call, self, origin)
+	pub fn dispatch(&self, call: OuterCall, origin: AccountId) -> DispatchResult {
+		<OuterCall as Dispatchable<Self>>::dispatch::<Self>(call, self, origin)
 	}
 
 	/// Validate a call.
@@ -228,7 +306,7 @@ impl MasterRuntime {
 	}
 }
 
-impl GenericRuntime for MasterRuntime {
+impl ModuleRuntime for MasterRuntime {
 	const LIMITED: bool = false;
 
 	fn thread_id(&self) -> ThreadId {
@@ -297,7 +375,9 @@ mod worker_runtime_test {
 			let runtime = WorkerRuntime::new(state_ptr, 1);
 			let tx =
 				OuterCall::Balances(balances::Call::Transfer(testing::random().public(), 1000));
-			assert!(runtime.dispatch(&tx, testing::random().public()).is_ok());
+			assert!(runtime
+				.dispatch(tx.clone(), testing::random().public())
+				.is_ok());
 			assert!(runtime.validate(&tx, testing::random().public()).is_ok());
 		});
 
@@ -306,15 +386,42 @@ mod worker_runtime_test {
 			let runtime = WorkerRuntime::new(state_ptr, 2);
 			let tx =
 				OuterCall::Balances(balances::Call::Transfer(testing::random().public(), 1000));
-			assert!(runtime.dispatch(&tx, testing::random().public()).is_ok());
+			assert!(runtime
+				.dispatch(tx.clone(), testing::random().public())
+				.is_ok());
 			assert!(runtime.validate(&tx, testing::random().public()).is_ok());
 		});
 	}
 
 	#[test]
-	#[ignore]
 	fn worker_runtime_caching_works() {
-		todo!()
+		let state = RuntimeState::new().as_arc();
+		let k1: StateKey = vec![1u8].into();
+		let k2: StateKey = vec![2u8].into();
+		let rt = WorkerRuntime::new(Arc::clone(&state), 1);
+
+		assert!(rt.read(&k1).is_ok());
+		assert!(rt.read(&k2).is_ok());
+
+		// nothing is cached.
+		assert_eq!(rt.cache.borrow().len(), 0);
+
+		assert!(rt.write(&k1, vec![1].into()).is_ok());
+
+		// something is cached.
+		assert_eq!(rt.cache.borrow().len(), 1);
+
+		// it is not written to state
+		assert_eq!(state.read(&k1, 1).unwrap(), vec![].into());
+
+		// but reading through runtime works fine.
+		assert_eq!(rt.read(&k1).unwrap(), vec![1].into());
+
+		// commit
+		rt.commit_cache();
+
+		// now it is also in state
+		assert_eq!(state.read(&k1, 1).unwrap(), vec![1].into());
 	}
 }
 

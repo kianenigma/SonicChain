@@ -36,6 +36,15 @@ impl codec::Encode for Public {
 
 impl codec::Decode for Public {
 	fn decode<I: codec::Input>(value: &mut I) -> Result<Self, codec::Error> {
+		if value
+			.remaining_len()
+			.expect("remaining_len should works")
+			.unwrap_or(0)
+			== 0
+		{
+			return Ok(Default::default());
+		}
+
 		let mut bytes = [0u8; edc::PUBLIC_KEY_LENGTH];
 		value
 			.read(&mut bytes)

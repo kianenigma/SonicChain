@@ -4,10 +4,12 @@ macro_rules! decl_storage_map {
 	($name:ident, $storage_name:expr, $key_type:ty, $value_type:ty) => {
 		pub struct $name<R>(std::marker::PhantomData<R>);
 
-		impl<R: $crate::GenericRuntime> $name<R> {
+		impl<R: $crate::ModuleRuntime> $name<R> {
 			pub fn key_for(key: $key_type) -> $crate::primitives::Key {
 				let mut final_key = Vec::new();
-				final_key.extend(format!("{}:{}", MODULE, $storage_name).as_bytes());
+				let storage_name = format!("{}:{}", MODULE, $storage_name);
+				log::trace!(target: "storage", "storage op @ [{}({:?})]", storage_name, key);
+				final_key.extend(storage_name.as_bytes());
 				final_key.extend(key.encode());
 				final_key.into()
 			}
@@ -19,6 +21,7 @@ macro_rules! decl_storage_map {
 			) -> Result<(), $crate::primitives::ThreadId> {
 				let encoded_value = val.encode();
 				let final_key = Self::key_for(key);
+				log::trace!(target: "storage", "write @ [{:?}]", val);
 				runtime.write(&final_key, encoded_value.into())
 			}
 
@@ -29,6 +32,7 @@ macro_rules! decl_storage_map {
 				let final_key = Self::key_for(key);
 				let encoded = runtime.read(&final_key)?;
 				let maybe_decoded = <$value_type as Decode>::decode(&mut &*encoded.0);
+				log::trace!(target: "storage", "read [{:?}]", maybe_decoded);
 				Ok(maybe_decoded.unwrap_or_default())
 			}
 
@@ -45,6 +49,13 @@ macro_rules! decl_storage_map {
 			pub fn clear(runtime: &R, key: $key_type) -> Result<(), $crate::primitives::ThreadId> {
 				Self::write(runtime, key, Default::default())
 			}
+
+			pub fn exists(
+				runtime: &R,
+				key: $key_type,
+			) -> Result<bool, $crate::primitives::ThreadId> {
+				Self::read(runtime, key).map(|val| val != <$value_type as Default>::default())
+			}
 		}
 	};
 }
@@ -55,7 +66,7 @@ macro_rules! decl_storage_value {
 	($name:ident, $storage_name:expr, $value_type:ty) => {
 		pub struct $name<R>(std::marker::PhantomData<R>);
 
-		impl<R: $crate::GenericRuntime> $name<R> {
+		impl<R: $crate::ModuleRuntime> $name<R> {
 			pub fn key() -> $crate::primitives::Key {
 				format!("{}:{}", MODULE, $storage_name)
 					.as_bytes()
@@ -96,9 +107,12 @@ macro_rules! decl_storage_value {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 mod tests {
 	use crate::{RuntimeState, WorkerRuntime};
 	use parity_scale_codec::{Decode, Encode};
+	use primitives::testing;
+	use primitives::AccountId;
 
 	const MODULE: &'static str = "test";
 
@@ -106,7 +120,19 @@ mod tests {
 	pub struct Something(pub u32);
 
 	decl_storage_map!(TestMap, "map", u8, Something);
+	decl_storage_map!(AccMap, "accMap", AccountId, AccountId);
 	decl_storage_value!(TestValue, "value", Vec<u32>);
+
+	#[test]
+	fn map_account_id_default_works() {
+		let state = RuntimeState::new().as_arc();
+		let rt = WorkerRuntime::new(state, 0);
+
+		assert_eq!(
+			AccMap::read(&rt, testing::alice().public()).unwrap(),
+			testing::default().public()
+		);
+	}
 
 	#[test]
 	fn map_works() {
@@ -115,6 +141,8 @@ mod tests {
 
 		// reads default
 		assert_eq!(TestMap::read(&rt, 10), Ok(Something(0)));
+
+		assert_eq!(TestMap::exists(&rt, 19).unwrap(), false);
 
 		// can write
 		assert_eq!(TestMap::write(&rt, 10, Something(10)), Ok(()));

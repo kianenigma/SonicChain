@@ -5,6 +5,18 @@ use std::collections::BTreeMap;
 use std::fmt::{self, Debug, Formatter};
 use std::sync::mpsc::Sender;
 
+/// A block of transaction.
+pub struct Block {
+	/// Transactions within the block.
+	pub transactions: Vec<Transaction>,
+}
+
+impl From<Vec<Transaction>> for Block {
+	fn from(transactions: Vec<Transaction>) -> Self {
+		Self { transactions }
+	}
+}
+
 /// Status of a transaction.
 ///
 /// This is used to annotate the final status of a transaction.
@@ -43,6 +55,8 @@ impl Default for ExecutionStatus {
 #[derive(Clone, Eq, PartialEq)]
 pub struct Transaction {
 	/// The identifier of the transaction.
+	///
+	/// This must be strictly unique.
 	pub id: TransactionId,
 	/// Status of the transaction.
 	///
@@ -167,7 +181,6 @@ pub enum MessagePayload {
 	/// Master is signaling the end.
 	Terminate,
 	/// An arbitrary payload of bytes for testing.
-	#[cfg(test)]
 	Test(Vec<u8>),
 }
 

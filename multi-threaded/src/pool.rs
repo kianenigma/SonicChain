@@ -2,7 +2,7 @@ use crate::types;
 use std::iter::*;
 
 /// An ordered. transaction pool.
-pub trait TransactionPool<Tx> {
+pub trait TransactionPool<Tx>: From<Vec<Tx>> {
 	/// Create a new transaction pool.
 	fn new() -> Self;
 
@@ -13,6 +13,11 @@ pub trait TransactionPool<Tx> {
 	///
 	/// This will add the transaction to the end of the pool.
 	fn push_back(&mut self, tx: Tx);
+
+	/// Insert a batch of transactions
+	///
+	/// This will add all of the transactions to the end of the pool.
+	fn push_batch(&mut self, txs: &[Tx]);
 
 	/// Insert a new transaction at the given index of the pool.
 	///
@@ -70,6 +75,12 @@ pub trait TransactionPool<Tx> {
 #[derive(Default, Debug)]
 pub struct VecPool<Tx> {
 	inner: Vec<Tx>,
+}
+
+impl<Tx> From<Vec<Tx>> for VecPool<Tx> {
+	fn from(v: Vec<Tx>) -> Self {
+		Self { inner: v }
+	}
 }
 
 impl<Tx> IntoIterator for VecPool<Tx> {
@@ -136,6 +147,10 @@ impl<Tx: Clone + types::VerifiableTransaction> TransactionPool<Tx> for VecPool<T
 			panic!("Attempted to insert invalid transaction to the pool.")
 		}
 		self.inner.push(tx);
+	}
+
+	fn push_batch(&mut self, tx: &[Tx]) {
+		tx.into_iter().for_each(|t| self.push_back(t.clone()));
 	}
 
 	fn insert(&mut self, index: usize, tx: Tx) {

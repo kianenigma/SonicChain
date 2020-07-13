@@ -14,6 +14,22 @@ macro_rules! log {
 	};
 }
 
+/// Extension trait to check the equality of two state dumps.
+///
+/// This can be done by means of state root in case of merklized state, or others if a simpler state
+/// implementation is being used.
+pub trait StateEq {
+	fn state_eq(&self, other: Self) -> bool;
+}
+
+impl<K: KeyT, V: ValueT, T: TaintT> StateEq for MapType<K, V, T> {
+	fn state_eq(&self, other: Self) -> bool {
+		self.iter()
+			.all(|(k, v)| other.get(k).map(|vv| *v == *vv).unwrap_or(false))
+			&& self.keys().len() == other.keys().len()
+	}
+}
+
 /// Public interface of a state database. It could in principle use any backend.
 pub trait GenericState<K, V, T> {
 	/// Read the state entry at `key`.
@@ -54,13 +70,14 @@ pub trait GenericState<K, V, T> {
 	}
 }
 
-type MapType<K, V, T> = HashMap<K, StateEntry<V, T>>;
+/// The inner HashMap type.
+pub type MapType<K, V, T> = HashMap<K, StateEntry<V, T>>;
 
 pub trait KeyT: Clone + Debug + std::hash::Hash + Eq + PartialEq {}
 impl<T: Clone + Debug + std::hash::Hash + Eq + PartialEq> KeyT for T {}
 
-pub trait ValueT: Clone + Debug + Default {}
-impl<T: Clone + Debug + Default> ValueT for T {}
+pub trait ValueT: Clone + Debug + Default + Eq + PartialEq {}
+impl<T: Clone + Debug + Default + Eq + PartialEq> ValueT for T {}
 
 pub trait TaintT: Clone + Copy + Debug + Eq + PartialEq {}
 impl<T: Clone + Copy + Debug + Eq + PartialEq> TaintT for T {}
@@ -70,6 +87,14 @@ pub struct StateEntry<V, T> {
 	data: RefCell<V>,
 	taint: Option<T>,
 }
+
+impl<V: ValueT, T> PartialEq for StateEntry<V, T> {
+	fn eq(&self, other: &Self) -> bool {
+		self.data.eq(&other.data)
+	}
+}
+
+impl<V: ValueT, T> Eq for StateEntry<V, T> {}
 
 // or just use atomic RefCell.
 unsafe impl<V, T> Sync for StateEntry<V, T> {}
@@ -140,6 +165,31 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 			.write()
 			.unwrap()
 			.insert(at.clone(), StateEntry::new_data(value));
+	}
+
+	/// Return a dump of the state at this point in time as a HashMap.
+	///
+	/// Note that this copied all the data to na new hashmap and hence is an expensive operation.
+	pub fn dump(&self) -> MapType<K, V, T> {
+		self.backend
+			.read()
+			.map(|g| g.clone())
+			.expect("dumping state should work")
+	}
+
+	/// insert all the keys of the given state into self.
+	///
+	/// Infallible.
+	pub fn unsafe_duplicate(&self, initial: Self) {
+		initial
+			.dump()
+			.into_iter()
+			.for_each(|(k, v)| self.unsafe_insert(&k, v))
+	}
+
+	/// Clear the inner map
+	pub fn unsafe_clean(&self) {
+		self.backend.write().unwrap().clear();
 	}
 
 	/// Unsafe implementation of read. This will not respect the tainting of the key.
@@ -447,5 +497,80 @@ mod test_state {
 
 		assert_eq!(state.unsafe_read_taint(&10u32), Some(1));
 		assert_eq!(state.unsafe_read_value(&10u32), Some(99u32));
+	}
+
+	#[test]
+	fn duplicate_works() {
+		let initial = TestState::new();
+		initial.unsafe_insert(&10u32, StateEntry::new_data(10u32));
+		initial.unsafe_insert(&11u32, StateEntry::new(11, 1));
+
+		let state = TestState::new();
+		state.unsafe_duplicate(initial);
+
+		let dump = state.dump();
+		assert_eq!(
+			*dump.get(&10).unwrap(),
+			StateEntry {
+				data: 10u32.into(),
+				taint: None,
+			}
+		);
+		assert_eq!(
+			*dump.get(&11).unwrap(),
+			StateEntry {
+				data: 11u32.into(),
+				taint: Some(1),
+			}
+		);
+	}
+
+	#[test]
+	fn dump_works() {
+		let state = TestState::new();
+		state.unsafe_insert(&10u32, StateEntry::new_data(10u32));
+		state.unsafe_insert(&11u32, StateEntry::new(11, 1));
+
+		let dump = state.dump();
+		assert_eq!(
+			*dump.get(&10).unwrap(),
+			StateEntry {
+				data: 10u32.into(),
+				taint: None,
+			}
+		);
+		assert_eq!(
+			*dump.get(&11).unwrap(),
+			StateEntry {
+				data: 11u32.into(),
+				taint: Some(1),
+			}
+		);
+	}
+
+	#[test]
+	fn clean_works() {
+		let state = TestState::new();
+		state.unsafe_insert(&10u32, StateEntry::new_data(10u32));
+		state.unsafe_insert(&11u32, StateEntry::new(11, 1));
+
+		assert_eq!(
+			state.unsafe_read(&10).unwrap(),
+			StateEntry {
+				data: 10u32.into(),
+				taint: None,
+			}
+		);
+		assert_eq!(
+			state.unsafe_read(&11).unwrap(),
+			StateEntry {
+				data: 11u32.into(),
+				taint: Some(1),
+			}
+		);
+
+		state.unsafe_clean();
+		assert!(state.unsafe_read(&10).is_none());
+		assert!(state.unsafe_read(&11).is_none());
 	}
 }

@@ -161,7 +161,7 @@ impl Worker {
 	pub(crate) fn execute_transaction(&self, tx: Transaction) -> runtime::DispatchResult {
 		let call = tx.function;
 		let origin = tx.signature.0;
-		self.runtime.dispatch(&call, origin)
+		self.runtime.dispatch(call, origin)
 	}
 
 	/// Tries to execute the transaction, else forward it to either another worker who owns it, or
@@ -279,7 +279,7 @@ impl Worker {
 mod worker_test {
 	use super::*;
 	use primitives::*;
-	use runtime::balances::BalanceOf;
+	use runtime::balances::*;
 	use std::matches;
 	use std::sync::mpsc::channel;
 
@@ -316,7 +316,7 @@ mod worker_test {
 		));
 
 		// give alice some funds.
-		BalanceOf::write(&master_runtime, alice, 999).unwrap();
+		BalanceOf::write(&master_runtime, alice, 999.into()).unwrap();
 
 		// now alice has some funds.
 		assert!(matches!(
@@ -387,7 +387,7 @@ mod worker_test {
 			.unsafe_insert(&alice_key, state::StateEntry::new_taint(OTHER_WORKER));
 
 		assert!(matches!(
-			dbg!(worker.execute_or_forward(tx)),
+			worker.execute_or_forward(tx),
 			ExecutionOutcome::ForwardedToMaster
 		));
 

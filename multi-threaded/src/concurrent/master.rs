@@ -58,8 +58,12 @@ pub struct Master<P: TransactionPool<Transaction>, D> {
 
 impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 	/// Create a new instance of the master queue.
-	pub fn new(id: ThreadId, from_workers: Receiver<Message>) -> Self {
-		let state = Default::default();
+	pub fn new(
+		id: ThreadId,
+		from_workers: Receiver<Message>,
+		initial_state: Option<State>,
+	) -> Self {
+		let state: Arc<State> = initial_state.unwrap_or_default().into();
 		let runtime = runtime::MasterRuntime::new(Arc::clone(&state), id);
 		Self {
 			id: id,
@@ -74,9 +78,9 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 	}
 
 	/// Call [`Self::new`] with the current thread id.
-	pub fn new_from_thread(from_workers: Receiver<Message>) -> Self {
+	pub fn new_from_thread(from_workers: Receiver<Message>, initial_state: Option<State>) -> Self {
 		let id = thread::current().id().as_u64().into();
-		Self::new(id, from_workers)
+		Self::new(id, from_workers, initial_state)
 	}
 
 	/// Get the number of workers.
@@ -101,7 +105,10 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 	}
 
 	/// The main logic of the master thread.
-	pub fn run(&mut self) {
+	pub fn run_author(&mut self) {
+		// unpark all workers.
+		self.unpark_all();
+
 		// distribute transactions, mark all transactions by their _designated_ executor.
 		self.initial_phase();
 
@@ -251,18 +258,13 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 		);
 		for tx in self.orphan_pool.iter_mut() {
 			debug_assert_eq!(tx.status, TransactionStatus::Orphan);
-			let call = &tx.function;
 			let origin = tx.signature.0;
+			log!(trace, "Executing orphan tx: {:?}", tx);
 			let _outcome = self
 				.runtime
-				.dispatch(call, origin)
+				.dispatch(tx.function.clone(), origin)
 				.expect("Executing transaction in the master runtime should never fail; qed");
-			log!(
-				trace,
-				"orphan transaction {:?} outcome = {:?}",
-				call,
-				_outcome,
-			);
+			log!(trace, "outcome = {:?}", _outcome,);
 		}
 	}
 
@@ -294,6 +296,8 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 	/// A run method only for testing.
 	#[cfg(test)]
 	pub fn run_test(&self) {
+		self.unpark_all();
+
 		// receive from all workers.
 		let mut num_received = 0;
 		let num_workers = self.num_workers();
@@ -326,7 +330,7 @@ mod master_tests_single_worker {
 
 	fn test_master() -> (Master<Pool, RoundRobin>, Receiver<Message>, Sender<Message>) {
 		let (from_workers_tx, from_workers_rx) = channel();
-		let mut master = Master::<Pool, RoundRobin>::new(MASTER_ID, from_workers_rx);
+		let mut master = Master::<Pool, RoundRobin>::new(MASTER_ID, from_workers_rx, None);
 
 		let (to_worker_tx, to_worker_rx) = channel();
 		let handle = std::thread::spawn(move || {
@@ -401,7 +405,7 @@ mod master_tests_multi_worker {
 		Sender<Message>,
 	) {
 		let (from_workers_tx, from_workers_rx) = channel();
-		let mut master = Master::<Pool, RoundRobin>::new(MASTER_ID, from_workers_rx);
+		let mut master = Master::<Pool, RoundRobin>::new(MASTER_ID, from_workers_rx, None);
 
 		let mut worker_receivers = vec![];
 
