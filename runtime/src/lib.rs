@@ -11,6 +11,9 @@ pub use primitives;
 /// The state type of the runtime.
 pub type RuntimeState = TaintState<Key, Value, ThreadId>;
 
+/// The inner hash map used in state.
+pub type StateMap = state::MapType<Key, Value, ThreadId>;
+
 pub mod balances;
 pub mod staking;
 pub mod storage_macros;
@@ -277,7 +280,7 @@ impl ModuleRuntime for WorkerRuntime {
 
 /// A runtime that can be used by the master thread.
 ///
-/// This runtime will not really care about thread ids and tainiting and eagerly read/write from/to
+/// This runtime will not really care about thread ids and tainting and eagerly read/write from/to
 /// the storage.
 #[derive(Debug, Default)]
 pub struct MasterRuntime {

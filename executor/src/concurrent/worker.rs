@@ -1,9 +1,9 @@
 use crate::{
-	types::{ExecutionStatus, Message, MessagePayload, Transaction},
+	types::{ExecutionStatus, Message, MessagePayload, TaskType, Transaction, TransactionStatus},
 	State,
 };
 use primitives::{ThreadId, TransactionId};
-use runtime::{DispatchError, DispatchResult, WorkerRuntime};
+use runtime::{DispatchError, DispatchResult, MasterRuntime, WorkerRuntime};
 use std::collections::BTreeMap;
 use std::{
 	sync::{
@@ -45,8 +45,10 @@ pub struct Worker {
 	///
 	/// Note that the worker should typically only ever access the state through the runtime.
 	pub state: Arc<State>,
-	/// The runtime
+	/// The runtime. This is used for authoring.
 	pub runtime: WorkerRuntime,
+	/// The master runtime. This is used for validation.
+	pub master_runtime: runtime::MasterRuntime,
 	/// Channel to send messages to master.
 	pub to_master: Sender<Message>,
 	/// Channel to receive data from the master.
@@ -68,11 +70,13 @@ impl Worker {
 		from_others: Receiver<Message>,
 	) -> Self {
 		let runtime = WorkerRuntime::new(state.clone(), id);
+		let master_runtime = MasterRuntime::new(state.clone(), id);
 		Self {
 			id,
 			master_id,
 			state,
 			runtime,
+			master_runtime,
 			to_master,
 			from_master,
 			to_others: Default::default(),
@@ -92,21 +96,101 @@ impl Worker {
 		Self::new(id, master_id, state, to_master, from_master, from_others)
 	}
 
-	/// Run the main worker thread logic. This will called after the initial unparking of the
-	/// master.
+	/// Wait to receive the btree map of all other workers.
+	pub fn wait_finalize_setup(&mut self) {
+		match self.from_master.recv().unwrap().payload {
+			MessagePayload::FinalizeSetup(data) => self.to_others = data,
+			_ => panic!("Received unexpected message"),
+		};
+	}
+
+	/// Main logic of the worker.
+	///
+	/// The worker is always parked, and need to be unparked by the master. Once unparked, the
+	/// worker will wait for one message indicate the type of `Task` that need to be carried out.
+	/// Once the task is done, the worker parks loops back to parking itself.
+	pub fn run(self) {
+		loop {
+			log!(info, "Going to park.");
+			// park self.
+			thread::park();
+
+			// look for a task.
+			let Message { payload, from: _ } = self.from_master.recv().unwrap();
+			log!(debug, "Received task {:?}.", payload);
+
+			match payload {
+				MessagePayload::Task(t) => match t {
+					TaskType::Authoring => self.run_author(),
+					TaskType::Validating => self.run_validate(),
+				},
+				MessagePayload::Terminate => break,
+				_ => panic!("Unexpected message"),
+			}
+		}
+	}
+
+	/// Run the worker thread logic in validating.
+	pub fn run_validate(&self) {
+		// deplete the queue.
+		loop {
+			if let Ok(Message {
+				from: _from,
+				payload,
+			}) = self.from_master.try_recv()
+			{
+				debug_assert_eq!(_from, self.master_id);
+				log!(
+					trace,
+					"Message from master in authoring phase {:?}",
+					payload
+				);
+				match payload {
+					MessagePayload::Transaction(tx) => {
+						let Transaction {
+							function,
+							signature,
+							status,
+							..
+						} = tx;
+						// transaction must be marked for me.
+						debug_assert!(
+							std::matches!(status, TransactionStatus::Done(who) if who == self.id)
+						);
+						let origin = signature.0;
+						// we know that this transaction will not conflict with anyone else.
+						self.master_runtime
+							.dispatch(function, origin)
+							.expect("Executing transaction in the validation phase by thread should never fail");
+					}
+					MessagePayload::TransactionDistributionDone => {
+						break;
+					}
+					_ => panic!("Unexpected message type in validation."),
+				}
+			}
+		}
+
+		// report back to master and done.
+		self.to_master
+			.send(MessagePayload::ConcurrentPhaseReportValidation.into())
+			.expect("Broadcast should work");
+	}
+
+	/// Run the main worker thread logic in authoring. This will called after the initial unparking
+	/// of the master.
 	///
 	/// It will loop and try and receive stuff from master until it is done, then it will read from
 	/// worker incoming queue until termination.
-	pub fn run(self) {
+	pub fn run_author(&self) {
 		// execute everything from master.
-		log!(info, "Starting phase `deplete_master_queue()`.");
 		self.deplete_master_queue();
 
 		// try and read termination signal from master, else execute anything from other workers.
 		loop {
 			if let Ok(Message { payload, from: _ }) = self.from_master.try_recv() {
 				match payload {
-					MessagePayload::Terminate => break,
+					MessagePayload::TaskDone => break,
 					_ => panic!("Unexpected message payload."),
 				}
 			}
@@ -142,12 +226,12 @@ impl Worker {
 						}
 					}
 				}
-				MessagePayload::InitialPhaseDone => break,
+				MessagePayload::TransactionDistributionDone => break,
 				_ => panic!("Unexpected message payload."),
 			};
 		}
 
-		let message = MessagePayload::InitialPhaseReport(executed, forwarded).into();
+		let message = MessagePayload::ConcurrentPhaseReport(executed, forwarded).into();
 		log!(info, "Sending report {:?}", message);
 		self.to_master
 			.send(message)
@@ -276,7 +360,93 @@ impl Worker {
 }
 
 #[cfg(test)]
-mod worker_test {
+mod worker_test_validation {
+	use super::*;
+	use crate::types::transaction_generator;
+	use crate::types::MessagePayload;
+	use primitives::*;
+	use runtime::balances::*;
+	use std::matches;
+	use std::sync::mpsc::channel;
+
+	const MASTER_ID: ThreadId = 99;
+
+	fn test_worker(
+		initial_messages: Vec<Message>,
+	) -> (Worker, Receiver<Message>, Receiver<Message>) {
+		let state = State::new().as_arc();
+		let (from_master_tx, from_master_rx) = channel();
+		let (to_master_tx, to_master_rx) = channel();
+		let (_, others_rx) = channel();
+		let (_, other_worker_rx) = channel();
+		let worker =
+			Worker::new_from_thread(MASTER_ID, state, to_master_tx, from_master_rx, others_rx);
+
+		initial_messages.into_iter().for_each(|m| {
+			from_master_tx.send(m).unwrap();
+		});
+
+		(worker, other_worker_rx, to_master_rx)
+	}
+
+	#[test]
+	fn can_validate_block() {
+		let transactions = transaction_generator::simple_alice_bob_dave()
+			.into_iter()
+			.map(|mut tx| {
+				tx.set_done(1);
+				Message {
+					from: MASTER_ID,
+					payload: MessagePayload::Transaction(tx),
+				}
+			})
+			.chain(std::iter::once(Message {
+				from: MASTER_ID,
+				payload: MessagePayload::TransactionDistributionDone,
+			}))
+			.collect();
+
+		let (worker, _, master_rx) = test_worker(transactions);
+		assert_eq!(
+			worker.id, 1,
+			"The assumption of this test is that the worker's id will be 1."
+		);
+		transaction_generator::endow_account(
+			testing::alice().public(),
+			&worker.master_runtime,
+			100,
+		);
+		worker.run_validate();
+
+		assert_eq!(
+			<BalanceOf<MasterRuntime>>::read(&worker.master_runtime, testing::alice().public())
+				.unwrap()
+				.free(),
+			80,
+		);
+		assert_eq!(
+			<BalanceOf<MasterRuntime>>::read(&worker.master_runtime, testing::bob().public())
+				.unwrap()
+				.free(),
+			10,
+		);
+		assert_eq!(
+			<BalanceOf<MasterRuntime>>::read(&worker.master_runtime, testing::dave().public())
+				.unwrap()
+				.free(),
+			10,
+		);
+
+		// We will send this back to maser.
+		assert!(matches!(
+			master_rx.recv().unwrap().payload,
+			MessagePayload::ConcurrentPhaseReportValidation
+		))
+	}
+}
+
+#[cfg(test)]
+mod worker_test_authoring {
 	use super::*;
 	use primitives::*;
 	use runtime::balances::*;
@@ -298,15 +468,18 @@ mod worker_test {
 		(worker, other_worker_rx, to_master_rx)
 	}
 
-	fn test_tx(origin: Pair) -> (Transaction, AccountId) {
-		(Transaction::new_transfer(origin), testing::alice().public())
+	fn test_tx(origin: Pair, id: TransactionId) -> (Transaction, AccountId) {
+		(
+			Transaction::new_transfer(origin, id),
+			testing::alice().public(),
+		)
 	}
 
 	#[test]
 	fn can_execute_tx() {
 		let (worker, _, master_rx) = test_worker();
 		let alice = testing::alice();
-		let (tx, alice) = test_tx(alice);
+		let (tx, alice) = test_tx(alice, 1);
 		let master_runtime = runtime::MasterRuntime::new(Arc::clone(&worker.state), 0);
 
 		// because alice has no funds yet.
@@ -355,7 +528,7 @@ mod worker_test {
 	fn will_forward_tx_if_tainted() {
 		let (worker, other_rx, _) = test_worker();
 		let alice = testing::alice();
-		let (tx, alice) = test_tx(alice);
+		let (tx, alice) = test_tx(alice, 1);
 
 		// manually taint the storage item of bob to some other thread.
 		let alice_key = <BalanceOf<WorkerRuntime>>::key_for(alice);
@@ -377,7 +550,7 @@ mod worker_test {
 	fn will_forward_to_master_if_already_forwarded() {
 		let (worker, _, master_rx) = test_worker();
 		let alice = testing::alice();
-		let (mut tx, alice) = test_tx(alice);
+		let (mut tx, alice) = test_tx(alice, 1);
 		tx.exec_status = ExecutionStatus::Forwarded;
 
 		// manually taint the storage item of alice to some other thread.
@@ -400,7 +573,7 @@ mod worker_test {
 	fn will_report_to_master_if_forwarded_and_executed() {
 		let (worker, _, master_rx) = test_worker();
 		let alice = testing::alice();
-		let (mut tx, _) = test_tx(alice);
+		let (mut tx, _) = test_tx(alice, 1);
 
 		// make if forwarded for whatever reason.
 		tx.exec_status = ExecutionStatus::Forwarded;

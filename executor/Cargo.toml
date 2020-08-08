@@ -1,5 +1,5 @@
 [package]
-name = "multi-threaded"
+name = "executor"
 version = "0.1.0"
 authors = ["kianenigma <kian.peymani@gmail.com>"]
 edition = "2018"
@@ -16,6 +16,6 @@ log = "0.4.8"
 env_logger = "0.7.1"
 chrono = "0.4.11"
 colored = "1.9"
+rand = "0.7.3"
 
 [dev-dependencies]
-rand = "0.7.3"

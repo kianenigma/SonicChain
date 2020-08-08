@@ -4,5 +4,5 @@ members = [
 	"state",
 	"primitives",
 	"runtime",
-	"multi-threaded",
+	"executor",
 ]

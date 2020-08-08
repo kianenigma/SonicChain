@@ -126,9 +126,9 @@ mod tests {
 	fn round_robin_works() {
 		let mut pool = <VecPool<Transaction>>::new();
 
-		pool.push_back(Transaction::new_transfer(testing::alice()));
-		pool.push_back(Transaction::new_transfer(testing::bob()));
-		pool.push_back(Transaction::new_transfer(testing::dave()));
+		pool.push_back(Transaction::new_transfer(testing::alice(), 1));
+		pool.push_back(Transaction::new_transfer(testing::bob(), 2));
+		pool.push_back(Transaction::new_transfer(testing::dave(), 3));
 
 		let ids = vec![1, 2];
 

@@ -1,6 +1,8 @@
-use crate::types::MessagePayload;
-use crate::{pool::*, types::Message, Distributer, State, Transaction, TransactionStatus};
+use crate::concurrent::tx_distribution::Distributer;
+use crate::types::{MessagePayload, TaskType, TransactionStatus};
+use crate::{pool::*, types::Message, Block, State, Transaction};
 use primitives::*;
+use runtime::StateMap;
 use std::collections::BTreeMap;
 use std::sync::{
 	mpsc::{Receiver, SendError, Sender},
@@ -104,34 +106,125 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 			.for_each(|(_, h)| h.handle.thread().unpark())
 	}
 
-	/// The main logic of the master thread.
+	/// Run the logic needed to terminate all workers.
+	pub fn run_terminate(&self) {
+		self.unpark_all();
+		self.broadcast(MessagePayload::Terminate.into()).unwrap();
+	}
+
+	/// The logic of the master thread for validating a block.
+	pub fn run_validate(&mut self, block: Block) {
+		self.unpark_all();
+
+		self.broadcast(MessagePayload::Task(TaskType::Validating).into())
+			.expect("Broadcast should work");
+
+		let mut buckets: BTreeMap<ThreadId, Vec<Transaction>> = Default::default();
+		let mut orphans: Vec<Transaction> = Default::default();
+		for tx in block.transactions {
+			match tx.status {
+				TransactionStatus::Done(whom) => buckets.entry(whom).or_default().push(tx.clone()),
+				TransactionStatus::Orphan => orphans.push(tx.clone()),
+				_ => panic!("Unexpected tx status."),
+			}
+		}
+	}
+
+	/// The logic of the master thread for authoring a block.
 	pub fn run_author(&mut self) {
 		// unpark all workers.
 		self.unpark_all();
 
+		// send task.
+		self.broadcast(MessagePayload::Task(TaskType::Authoring).into())
+			.expect("Broadcast should work");
+
 		// distribute transactions, mark all transactions by their _designated_ executor.
-		self.initial_phase();
+		self.concurrent_phase();
 
 		// collect any `Orphan` or `Executed` events. This will update some of the transactions'
 		// `ExecutionStatus` to `Orphan` or `Done(_)` of some other thread than the designated one.
 		self.collection_phase();
 
 		// Send terminate to all workers.
-		self.broadcast(MessagePayload::Terminate.into())
+		self.broadcast(MessagePayload::TaskDone.into())
 			.expect("broadcast should work; qed.");
 
 		// Execute all the collected orphans.
-		self.orphan_phase();
+		self.execute_orphan_pool();
+	}
+
+	/// The logic of the master thread for validating a block.AccountId
+	///
+	/// It assumes that the state is already clean. It applies the block on top of the state. The
+	/// transactions are assumed to be in the correct order already: All the orphan ones will be
+	/// executed in the same order, same as all the transactions belonging to a particular thread.
+	pub fn validate_block(&mut self, block: Block) -> StateMap {
+		self.unpark_all();
+
+		self.broadcast(MessagePayload::Task(TaskType::Validating).into())
+			.expect("Broadcast should work");
+
+		for tx in block.transactions {
+			match tx.status {
+				TransactionStatus::Done(owner) => {
+					self.workers
+						.get(&owner)
+						.expect("Worker should exist")
+						.send
+						.send(MessagePayload::Transaction(tx).into())
+						.expect("Send should work");
+				}
+				TransactionStatus::Orphan => {
+					self.orphan_pool.push(tx);
+				}
+				_ => panic!("Transaction for validation need to be executed or orphan"),
+			}
+		}
+
+		// tell all workers that there will be no more incoming transactions.
+		self.broadcast(MessagePayload::TransactionDistributionDone.into())
+			.expect("Broadcast should work; qed.");
+
+		let mut workers_done = 0;
+		loop {
+			if let Ok(Message {
+				payload,
+				from: worker,
+			}) = self.from_workers.try_recv()
+			{
+				log!(
+					debug,
+					"message in collection phase of validating form {:?} => {:?}",
+					worker,
+					payload
+				);
+				match payload {
+					MessagePayload::ConcurrentPhaseReportValidation => {
+						workers_done += 1;
+					}
+					_ => panic!("Unexpected message type"),
+				}
+			}
+			if workers_done == self.workers.len() {
+				break;
+			}
+		}
+
+		log!(info, "All workers done. Moving on to orphans");
+		self.execute_orphan_pool();
+
+		self.state.dump()
 	}
 
 	/// Logic of the collection phase of the execution.
 	///
 	/// Things that happen here:
-	/// 1. collect `InitialPhaseReport` from all threads.
+	/// 1. collect `ConcurrentPhaseReport` from all threads.
 	/// 2. collect any `Orphan` transactions.
 	/// 3. collect any `Executed` transactions.
 	///
-	/// This process ends when we have received all `InitialPhaseReport`. Then, we know exactly how
+	/// This process ends when we have received all `ConcurrentPhaseReport`. Then, we know exactly how
 	/// many `Executed` events we must wait for. Only then, we can terminate.
 	fn collection_phase(&mut self) {
 		let mut executed_workers = 0;
@@ -154,7 +247,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 					payload
 				);
 				match payload {
-					MessagePayload::InitialPhaseReport(e, f) => {
+					MessagePayload::ConcurrentPhaseReport(e, f) => {
 						executed_workers += e;
 						forwarded += f;
 						reported += 1;
@@ -217,7 +310,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 	///
 	/// At the end of this phase, all transactions in the `tx_pool` must have been marked by
 	/// `Executed(id)` where the id is their _designated worker_.
-	pub(crate) fn initial_phase(&mut self) {
+	pub(crate) fn concurrent_phase(&mut self) {
 		self.distribute_transactions();
 
 		let threads_and_txs = self
@@ -242,15 +335,15 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 				.expect("Sending should not fail; qed.")
 		});
 
-		// tell all workers that the initial phase is done.
-		self.broadcast(MessagePayload::InitialPhaseDone.into())
+		// tell all workers that there will be no more incoming transactions.
+		self.broadcast(MessagePayload::TransactionDistributionDone.into())
 			.expect("Broadcast should work; qed.");
 	}
 
 	/// Execute all the transactions in the orphan queue on top of the previous state.
 	///
 	/// At this point, we are sure that no other thread is alive.
-	pub(crate) fn orphan_phase(&mut self) {
+	pub(crate) fn execute_orphan_pool(&mut self) {
 		log!(
 			info,
 			"Starting orphan phase with {} transactions.",
@@ -317,7 +410,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 #[cfg(test)]
 mod master_tests_single_worker {
 	use super::*;
-	use crate::tx_distribution::RoundRobin;
+	use crate::concurrent::tx_distribution::RoundRobin;
 	use crate::types::*;
 	use primitives::testing::*;
 	use std::sync::mpsc::*;
@@ -342,8 +435,10 @@ mod master_tests_single_worker {
 
 		let origins = vec![alice(), dave(), eve()];
 		assert_eq!(origins.len(), NUM_TX);
-		for o in origins.into_iter() {
-			master.tx_pool.push_back(Transaction::new_transfer(o))
+		for (i, o) in origins.into_iter().enumerate() {
+			master
+				.tx_pool
+				.push_back(Transaction::new_transfer(o, i as u32))
 		}
 
 		(master, to_worker_rx, from_workers_tx)
@@ -353,7 +448,7 @@ mod master_tests_single_worker {
 	fn initial_phase_works() {
 		let (mut master, worker_rx, _) = test_master();
 
-		master.initial_phase();
+		master.concurrent_phase();
 
 		// 4 tx must arrive.
 		for _ in 0..NUM_TX {
@@ -366,7 +461,7 @@ mod master_tests_single_worker {
 		// then this.
 		assert!(matches!(
 			worker_rx.recv().unwrap().payload,
-			MessagePayload::InitialPhaseDone
+			MessagePayload::TransactionDistributionDone
 		));
 	}
 
@@ -377,7 +472,7 @@ mod master_tests_single_worker {
 		// in a single worker setup it makes not much sense to have any sort of forwarding or
 		// orphans.
 		from_worker_tx
-			.send(MessagePayload::InitialPhaseReport(NUM_TX, 0).into())
+			.send(MessagePayload::ConcurrentPhaseReport(NUM_TX, 0).into())
 			.unwrap();
 
 		// this must terminate eventually with the messages sent above.
@@ -388,7 +483,7 @@ mod master_tests_single_worker {
 #[cfg(test)]
 mod master_tests_multi_worker {
 	use super::*;
-	use crate::tx_distribution::RoundRobin;
+	use crate::concurrent::tx_distribution::RoundRobin;
 	use crate::types::*;
 	use primitives::testing::*;
 	use std::sync::mpsc::*;
@@ -421,8 +516,7 @@ mod master_tests_multi_worker {
 		});
 
 		for i in 0..NUM_TX {
-			let mut tx = Transaction::new_transfer(random());
-			tx.id = i as TransactionId;
+			let tx = Transaction::new_transfer(random(), i as u32);
 			master.tx_pool.push_back(tx);
 		}
 
@@ -436,9 +530,9 @@ mod master_tests_multi_worker {
 	fn initial_phase_works() {
 		let (mut master, worker_receivers, _) = test_master();
 
-		master.initial_phase();
+		master.concurrent_phase();
 
-		// each thread must receive NUM_TX / WORKER_IDS.len() txs and one `InitialPhaseDone`.
+		// each thread must receive NUM_TX / WORKER_IDS.len() txs and one `TransactionDistributionDone`.
 		for rx in worker_receivers {
 			// NOTE: this might break once we have something other than basic round robin.
 			for _ in 0..NUM_TX / WORKER_IDS.len() {
@@ -450,7 +544,7 @@ mod master_tests_multi_worker {
 
 			assert!(matches!(
 				rx.recv().unwrap().payload,
-				MessagePayload::InitialPhaseDone
+				MessagePayload::TransactionDistributionDone
 			));
 		}
 	}
@@ -462,12 +556,12 @@ mod master_tests_multi_worker {
 		let (mut master, _receivers, from_worker_tx) = test_master();
 
 		// in this case this makes not difference thou'.
-		master.initial_phase();
+		master.concurrent_phase();
 
 		// each worker reports back that they've done NUM_TX/Len.
 		for _ in 0..WORKER_IDS.len() {
 			from_worker_tx
-				.send(MessagePayload::InitialPhaseReport(NUM_TX / WORKER_IDS.len(), 0).into())
+				.send(MessagePayload::ConcurrentPhaseReport(NUM_TX / WORKER_IDS.len(), 0).into())
 				.unwrap();
 		}
 
@@ -479,12 +573,14 @@ mod master_tests_multi_worker {
 	fn collection_phase_works_with_forwarded() {
 		let (mut master, _receivers, from_worker_tx) = test_master();
 
-		master.initial_phase();
+		master.concurrent_phase();
 
 		// each worker reports back that they've done all except one.
 		for _ in 0..WORKER_IDS.len() {
 			from_worker_tx
-				.send(MessagePayload::InitialPhaseReport(NUM_TX / WORKER_IDS.len() - 1, 1).into())
+				.send(
+					MessagePayload::ConcurrentPhaseReport(NUM_TX / WORKER_IDS.len() - 1, 1).into(),
+				)
 				.unwrap();
 		}
 

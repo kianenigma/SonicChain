@@ -25,7 +25,7 @@ pub trait StateEq {
 impl<K: KeyT, V: ValueT, T: TaintT> StateEq for MapType<K, V, T> {
 	fn state_eq(&self, other: Self) -> bool {
 		self.iter()
-			.all(|(k, v)| other.get(k).map(|vv| *v == *vv).unwrap_or(false))
+			.all(|(k, v)| other.get(k).map(|vv| v.data == vv.data).unwrap_or(false))
 			&& self.keys().len() == other.keys().len()
 	}
 }
@@ -187,10 +187,17 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 			.for_each(|(k, v)| self.unsafe_insert(&k, v))
 	}
 
-	/// Clear the inner map
+	/// Clear the inner map.
 	pub fn unsafe_clean(&self) {
 		self.backend.write().unwrap().clear();
 	}
+
+	/// Count all the keys in the state
+	pub fn unsafe_len(&self) -> usize {
+		self.backend.read().unwrap().len()
+	}
+
+	/// Print the entire state's info.
 
 	/// Unsafe implementation of read. This will not respect the tainting of the key.
 	pub fn unsafe_read_value(&self, key: &K) -> Option<V> {
@@ -572,5 +579,42 @@ mod test_state {
 		state.unsafe_clean();
 		assert!(state.unsafe_read(&10).is_none());
 		assert!(state.unsafe_read(&11).is_none());
+	}
+
+	#[test]
+	fn state_eq_works() {
+		let state1 = TestState::new();
+		state1.unsafe_insert(&10u32, StateEntry::new_data(10u32));
+		state1.unsafe_insert(&11u32, StateEntry::new(11, 1));
+		let dump1 = state1.dump();
+
+		let state2 = TestState::new();
+		state2.unsafe_insert(&10u32, StateEntry::new_data(10u32));
+		state2.unsafe_insert(&11u32, StateEntry::new(11, 1));
+		let dump2 = state2.dump();
+
+		assert!(dump1.state_eq(dump2));
+
+		let state3 = TestState::new();
+		state3.unsafe_insert(&10u32, StateEntry::new_data(11u32));
+		state3.unsafe_insert(&11u32, StateEntry::new(11, 1));
+		let dump3 = state3.dump();
+
+		assert!(!dump1.state_eq(dump3));
+	}
+
+	#[test]
+	fn state_eq_ignores_taint() {
+		let state1 = TestState::new();
+		state1.unsafe_insert(&10u32, StateEntry::new_data(10u32));
+		state1.unsafe_insert(&11u32, StateEntry::new(11, 1));
+		let dump1 = state1.dump();
+
+		let state2 = TestState::new();
+		state2.unsafe_insert(&10u32, StateEntry::new_data(10u32));
+		state2.unsafe_insert(&11u32, StateEntry::new(11, 2));
+		let dump2 = state2.dump();
+
+		assert!(dump1.state_eq(dump2));
 	}
 }

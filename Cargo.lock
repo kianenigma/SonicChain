@@ -215,6 +215,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "executor"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "colored",
+ "env_logger",
+ "log",
+ "num_cpus",
+ "parity-scale-codec",
+ "primitives",
+ "rand",
+ "runtime",
+ "state",
+]
+
+[[package]]
 name = "fake-simd"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -284,22 +300,6 @@ name = "memchr"
 version = "2.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3728d817d99e5ac407411fa471ff9800a778d88a24685968b36824eaf4bee400"
-
-[[package]]
-name = "multi-threaded"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "colored",
- "env_logger",
- "log",
- "num_cpus",
- "parity-scale-codec",
- "primitives",
- "rand",
- "runtime",
- "state",
-]
 
 [[package]]
 name = "num-integer"
