@@ -7,9 +7,13 @@ use std::{cell::RefCell, collections::HashMap, sync::Arc};
 pub mod balances;
 mod macros;
 pub mod staking;
+pub mod state_generator;
 
-// re-export macros.
+// re-exports.
 pub use primitives;
+
+// re-exports.
+pub use state_generator::InitialStateGenerate;
 
 /// The state type of the runtime.
 pub type RuntimeState = TaintState<Key, Value, ThreadId>;
@@ -275,6 +279,7 @@ impl ModuleRuntime for ConcurrentRuntime {
 #[derive(Debug, Default)]
 pub struct SequentialRuntime {
 	/// The state.
+	// FIXME: This shall not even need a Arc!
 	pub state: Arc<RuntimeState>,
 	/// The thread id.
 	pub id: ThreadId,

@@ -44,13 +44,13 @@ pub trait Executor {
 		initial_transactions: Vec<Transaction>,
 		initial_state: Option<StateMap>,
 	) -> bool {
-		if let Some(ref state) = initial_state {
+		if let Some(state) = initial_state.clone() {
 			log!(
 				info,
 				"Applying an initial state with {} keys for authoring.",
 				state.len()
 			);
-			self.apply_state(state.clone())
+			self.apply_state(state)
 		}
 		let (authoring_state, block) = self.author_block(initial_transactions);
 		self.clean();

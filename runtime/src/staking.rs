@@ -597,5 +597,5 @@ macro_rules! test_with_rt {
 	};
 }
 
-test_with_rt!(crate::SequentialRuntime, sequnetial_runtime);
+test_with_rt!(crate::SequentialRuntime, master_runtime);
 test_with_rt!(crate::ConcurrentRuntime, concurrent_runtime);

@@ -2,11 +2,11 @@ use executor::{concurrent::*, types::*, *};
 use primitives::*;
 use runtime::*;
 
-// FIXME: move delays to storage layer.
 // FIXME: means of annotating stuff.
 // FIXME: Timings are not really accurate yet.
+// FIXME: dataset: world of stakers
 // TODO: flaky predictions?
-// TODO: more complicated modules from staking
+// TODO: more complicated modules
 
 mod datasets {
 	use super::*;

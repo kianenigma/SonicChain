@@ -141,7 +141,7 @@ mod concurrent_executor {
 	use crate::{pool::TransactionPool, *};
 	use logging::init_logger;
 	use primitives::testing::*;
-	use runtime::SequentialRuntime;
+	use runtime::InitialStateGenerate;
 	use types::transaction_generator;
 
 	#[test]
@@ -191,15 +191,15 @@ mod concurrent_executor {
 		let mut executor = ConcurrentExecutor::<Pool, RoundRobin>::new(3, false, None);
 		let (transactions, accounts) = transaction_generator::bank(5, 20);
 
-		// TODO: this is simply too much hassle to setup. We need a bloody macro or something for
-		// this to easily setup mock states.
-		let initial_state = State::new();
-		let initial_state_rt = SequentialRuntime::new(initial_state.as_arc(), 999);
-		accounts
-			.into_iter()
-			.for_each(|acc| transaction_generator::endow_account(acc, &initial_state_rt, 100_000));
+		let initial_state = InitialStateGenerate::new()
+			.with_runtime(|rt| {
+				accounts
+					.into_iter()
+					.for_each(|acc| transaction_generator::endow_account(acc, rt, 100_000))
+			})
+			.build();
 
-		assert!(executor.author_and_validate(transactions, Some(initial_state_rt.state.dump())));
+		assert!(executor.author_and_validate(transactions, Some(initial_state)));
 	}
 
 	#[test]
@@ -312,15 +312,18 @@ mod concurrent_executor {
 					assert_eq!(executor.master.workers.len(), 4);
 
 					let (transfers, accounts) = transaction_generator::bank(NUM_ACCOUNTS, NUM_TXS);
+
+					let initial_state = InitialStateGenerate::new().with_runtime(|rt|
 					accounts.iter().for_each(|acc| {
 						transaction_generator::endow_account(
 							*acc,
-							&executor.master.runtime,
+							rt,
 							1000_000_000_000,
 						)
-					});
+					})).build();
 
-					executor.author_block(transfers);
+
+					executor.author_and_validate(transfers, Some(initial_state));
 
 					executor.master.run_terminate();
 					assert!(executor.master.join_all().is_ok());

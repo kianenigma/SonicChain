@@ -4,7 +4,6 @@ use std::{
 	collections::hash_map::HashMap,
 	fmt::Debug,
 	sync::{Arc, RwLock},
-	time::Duration,
 };
 
 const LOG_TARGET: &'static str = "state";
@@ -12,17 +11,21 @@ const LOG_TARGET: &'static str = "state";
 // TODO: for now I will sprinkle some manual sleeps here, but later on consider having some fancy
 // type like SlowMap that is a hashmap that sleeps upon both read and write.
 
-const READ_DELAY: Duration = Duration::from_millis(1);
-const WRITE_DELAY: Duration = Duration::from_millis(2);
+#[cfg(not(test))]
+const READ_DELAY: std::time::Duration = std::time::Duration::from_millis(1);
+#[cfg(not(test))]
+const WRITE_DELAY: std::time::Duration = std::time::Duration::from_millis(2);
 
 macro_rules! sleep_read {
 	() => {
+		#[cfg(not(test))]
 		std::thread::sleep(READ_DELAY);
 	};
 }
 
 macro_rules! write_sleep {
 	() => {
+		#[cfg(not(test))]
 		std::thread::sleep(WRITE_DELAY);
 	};
 }

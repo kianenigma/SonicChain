@@ -115,8 +115,6 @@ mod tests {
 	fn can_validate_block() {
 		let mut executor = SequentialExecutor::new();
 		let transactions = transaction_generator::simple_alice_bob_dave();
-		// TODO: maybe introduce initial_state to all of the functions in executor.. that would be
-		// more uniform but honestly more hassle to setup.
 		transaction_generator::endow_account(testing::alice().public(), &executor.runtime, 100);
 
 		let (_, block) = executor.author_block(transactions);
@@ -159,12 +157,12 @@ mod tests {
 		let mut executor = SequentialExecutor::new();
 		let transactions = transaction_generator::simple_alice_bob_dave();
 
-		// TODO: this is simply too much hassle to setup. We need a bloody macro or something for
-		// this to easily setup mock states.
-		let initial_state = State::new();
-		let initial_state_rt = SequentialRuntime::new(initial_state.as_arc(), 999);
-		transaction_generator::endow_account(testing::alice().public(), &initial_state_rt, 100);
+		let initial_state = InitialStateGenerate::new()
+			.with_runtime(|rt| {
+				transaction_generator::endow_account(testing::alice().public(), rt, 100)
+			})
+			.build();
 
-		assert!(executor.author_and_validate(transactions, Some(initial_state_rt.state.dump())));
+		assert!(executor.author_and_validate(transactions, Some(initial_state)));
 	}
 }
