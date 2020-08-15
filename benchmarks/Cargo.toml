@@ -1,10 +1,11 @@
 [package]
-name = "state"
+name = "benchmarks"
 version = "0.1.0"
 authors = ["kianenigma <kian.peymani@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+executor = { path = "../executor" }
 primitives = { path = "../primitives" }
-logging = { path = "../logging" }
-log = "0.4.8"
+runtime = { path = "../runtime" }
+state = { path = "../state" }

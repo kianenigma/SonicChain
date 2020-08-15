@@ -1,6 +1,6 @@
-use crate::{decl_storage_map, decl_tx};
 use crate::{
-	DispatchError, DispatchResult, Dispatchable, ModuleRuntime, UnwrapStorageOp, ValidationResult,
+	decl_storage_map, decl_tx, DispatchError, DispatchResult, Dispatchable, ModuleRuntime,
+	UnwrapStorageOp, ValidationResult,
 };
 use parity_scale_codec::{Decode, Encode};
 use primitives::*;
@@ -112,6 +112,7 @@ decl_tx! {
 		dest: AccountId,
 		value: Balance,
 	) {
+		std::thread::sleep(std::time::Duration::from_millis(10));
 		// If we fail at this step, it is fine. We have not written anything yet.
 		let mut old_balance =
 			BalanceOf::read(runtime, origin).or_forward()?;
@@ -139,7 +140,7 @@ macro_rules! test_with_rt {
 		mod $name {
 			type Runtime = $rt;
 			use super::*;
-			use crate::{DispatchError, OuterCall, RuntimeState};
+			use crate::*;
 			use std::sync::Arc;
 
 			#[test]
@@ -179,8 +180,8 @@ macro_rules! test_with_rt {
 				let transfer = OuterCall::Balances(Call::Transfer(bob.clone(), 666));
 
 				assert_eq!(
-					runtime.dispatch(transfer, alice).unwrap_err(),
-					DispatchError::LogicError("Does not have enough funds."),
+					runtime.dispatch(transfer, alice).unwrap(),
+					RuntimeDispatchSuccess::LogicError("Does not have enough funds."),
 				);
 
 				assert_eq!(BalanceOf::read(&runtime, bob).unwrap().free, 0);

@@ -194,12 +194,11 @@ pub enum MessagePayload {
 	/// The outcome report of the initial phase of the authoring phase.
 	///
 	/// First inner values are the _executed_, _forwarded_ and _orphaned_ count respectively.
-	ConcurrentPhaseReport(usize, usize),
-	/// Same as `ConcurrentPhaseReport`, but for validation phase.
+	AuthoringReport(usize, usize),
+	/// Same as `AuthoringReport`, but for validation phase.
 	///
 	/// There is no need to report back anything, just tell the master that you are done.
-	// TODO: rename this shit.
-	ConcurrentPhaseReportValidation,
+	ValidationReport,
 	/// Report the execution of a transaction by a worker back to master.
 	///
 	/// This should only be used if the thread executing a transaction is not the original owner of

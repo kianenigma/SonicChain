@@ -38,7 +38,7 @@ decl_storage_map!(Bonded, "bonded", AccountId, AccountId);
 // A mapping from stash to nominations.
 decl_storage_map!(Nominations, "nominations", AccountId, Vec<AccountId>);
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Encode, Decode)]
 pub enum Call {
 	/// Bond some funds.
 	Bond(Balance, AccountId),

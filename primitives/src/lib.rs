@@ -94,7 +94,7 @@ impl<T: ?Sized + AsRef<[u8]>> HexDisplayExt for T {
 }
 
 /// A state key.
-#[derive(Clone, Eq, PartialEq, Hash, Default)]
+#[derive(Clone, Eq, PartialEq, Hash, Default, Ord, PartialOrd)]
 pub struct StateKey(pub Vec<u8>);
 
 impl From<Vec<u8>> for StateKey {

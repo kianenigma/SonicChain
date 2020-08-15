@@ -1,6 +1,7 @@
 use crate::concurrent::tx_distribution::Distributer;
 use crate::types::{MessagePayload, TaskType, TransactionStatus};
 use crate::{pool::*, types::Message, Block, State, Transaction};
+use logging::log;
 use primitives::*;
 use runtime::StateMap;
 use std::collections::BTreeMap;
@@ -11,15 +12,6 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 
 const LOG_TARGET: &'static str = "master";
-
-macro_rules! log {
-	($level:tt, $patter:expr $(, $values:expr)* $(,)?) => {
-		log::$level!(
-			target: LOG_TARGET,
-			$patter $(, $values)*
-		)
-	};
-}
 
 /// A handle created for each worker thread.
 #[derive(Debug)]
@@ -200,7 +192,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 					payload
 				);
 				match payload {
-					MessagePayload::ConcurrentPhaseReportValidation => {
+					MessagePayload::ValidationReport => {
 						workers_done += 1;
 					}
 					_ => panic!("Unexpected message type"),
@@ -220,11 +212,11 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 	/// Logic of the collection phase of the execution.
 	///
 	/// Things that happen here:
-	/// 1. collect `ConcurrentPhaseReport` from all threads.
+	/// 1. collect `AuthoringReport` from all threads.
 	/// 2. collect any `Orphan` transactions.
 	/// 3. collect any `Executed` transactions.
 	///
-	/// This process ends when we have received all `ConcurrentPhaseReport`. Then, we know exactly how
+	/// This process ends when we have received all `AuthoringReport`. Then, we know exactly how
 	/// many `Executed` events we must wait for. Only then, we can terminate.
 	fn collection_phase(&mut self) {
 		let mut executed_workers = 0;
@@ -247,7 +239,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 					payload
 				);
 				match payload {
-					MessagePayload::ConcurrentPhaseReport(e, f) => {
+					MessagePayload::AuthoringReport(e, f) => {
 						executed_workers += e;
 						forwarded += f;
 						reported += 1;
@@ -472,7 +464,7 @@ mod master_tests_single_worker {
 		// in a single worker setup it makes not much sense to have any sort of forwarding or
 		// orphans.
 		from_worker_tx
-			.send(MessagePayload::ConcurrentPhaseReport(NUM_TX, 0).into())
+			.send(MessagePayload::AuthoringReport(NUM_TX, 0).into())
 			.unwrap();
 
 		// this must terminate eventually with the messages sent above.
@@ -561,12 +553,27 @@ mod master_tests_multi_worker {
 		// each worker reports back that they've done NUM_TX/Len.
 		for _ in 0..WORKER_IDS.len() {
 			from_worker_tx
-				.send(MessagePayload::ConcurrentPhaseReport(NUM_TX / WORKER_IDS.len(), 0).into())
+				.send(MessagePayload::AuthoringReport(NUM_TX / WORKER_IDS.len(), 0).into())
 				.unwrap();
 		}
 
 		// this must terminate eventually with the messages sent above.
 		master.collection_phase();
+	}
+
+	#[test]
+	fn execute_orphan_pool_with_logical_error() {
+		let (mut master, _, _) = test_master();
+
+		let mut transactions = transaction_generator::simple_alice_bob_dave();
+		// alice has some money but not enough to send it to send 10 to bob and dave.
+		transaction_generator::endow_account(testing::alice().public(), &master.runtime, 5);
+		transactions
+			.iter_mut()
+			.for_each(|t| t.status = TransactionStatus::Orphan);
+
+		master.orphan_pool.extend(transactions);
+		master.execute_orphan_pool();
 	}
 
 	#[test]
@@ -578,9 +585,7 @@ mod master_tests_multi_worker {
 		// each worker reports back that they've done all except one.
 		for _ in 0..WORKER_IDS.len() {
 			from_worker_tx
-				.send(
-					MessagePayload::ConcurrentPhaseReport(NUM_TX / WORKER_IDS.len() - 1, 1).into(),
-				)
+				.send(MessagePayload::AuthoringReport(NUM_TX / WORKER_IDS.len() - 1, 1).into())
 				.unwrap();
 		}
 

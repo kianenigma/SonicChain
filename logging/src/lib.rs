@@ -11,6 +11,16 @@ macro_rules! log_target {
 	};
 }
 
+#[macro_export]
+macro_rules! log {
+	($level:tt, $patter:expr $(, $values:expr)* $(,)?) => {
+		log::$level!(
+			target: LOG_TARGET,
+			$patter $(, $values)*
+		)
+	};
+}
+
 pub fn init_logger() {
 	use colored::*;
 	use std::io::Write;
@@ -19,7 +29,7 @@ pub fn init_logger() {
 		.format(|buf, record| {
 			writeln!(
 				buf,
-				"{} {} {} [{} ({})] - {}",
+				"{} {} {} [{} ({:?})] - {}",
 				chrono::Local::now()
 					.format("%Y-%m-%dT%H:%M:%S")
 					.to_string()
@@ -33,9 +43,10 @@ pub fn init_logger() {
 					Level::Trace => "Trace".blue(),
 				}
 				.bold(),
-				record.module_path_static().unwrap_or("?").cyan(),
+				record.target().italic().cyan(),
+				// record.module_path_static().unwrap_or("?"),
 				thread::current().name().unwrap_or("Unnamed thread.").bold(),
-				thread::current().id().as_u64(),
+				thread::current().id(),
 				record.args()
 			)
 		})

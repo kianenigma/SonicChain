@@ -1,18 +1,10 @@
+use logging::log;
 use std::cell::RefCell;
 use std::collections::hash_map::HashMap;
 use std::fmt::Debug;
 use std::sync::{Arc, RwLock};
 
 const LOG_TARGET: &'static str = "state";
-
-macro_rules! log {
-	($level:tt, $patter:expr $(, $values:expr)* $(,)?) => {
-		log::$level!(
-			target: crate::LOG_TARGET,
-			$patter $(, $values)*
-		)
-	};
-}
 
 /// Extension trait to check the equality of two state dumps.
 ///
@@ -100,6 +92,10 @@ impl<V: ValueT, T> Eq for StateEntry<V, T> {}
 unsafe impl<V, T> Sync for StateEntry<V, T> {}
 
 impl<V: ValueT, T: TaintT> StateEntry<V, T> {
+	pub fn data(&self) -> V {
+		self.data.borrow().clone()
+	}
+
 	pub fn new(value: V, taint: T) -> Self {
 		Self {
 			data: value.into(),
@@ -160,7 +156,8 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 
 	/// Unsafe insert of a value, wiping away the taint value..
 	pub fn unsafe_insert_genesis_value(&self, at: &K, value: V) {
-		log!(trace, "inserting genesis value at {:?} => {:?}", at, value);
+		logging::init_logger();
+		logging::log!(trace, "inserting genesis value at {:?} => {:?}", at, value);
 		self.backend
 			.write()
 			.unwrap()

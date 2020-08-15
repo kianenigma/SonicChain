@@ -1,3 +1,4 @@
+use logging::log;
 use parity_scale_codec::{Decode, Encode};
 use primitives::*;
 use state::{GenericState, TaintState};
@@ -5,7 +6,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-// re-exports for decl_storage macros.
+pub mod balances;
+pub mod decl_storage;
+pub mod decl_tx;
+pub mod staking;
+
+// re-export macros.
 pub use primitives;
 
 /// The state type of the runtime.
@@ -14,48 +20,11 @@ pub type RuntimeState = TaintState<Key, Value, ThreadId>;
 /// The inner hash map used in state.
 pub type StateMap = state::MapType<Key, Value, ThreadId>;
 
-pub mod balances;
-pub mod staking;
-pub mod storage_macros;
-
 const LOG_TARGET: &'static str = "runtime";
 
-#[macro_export]
-macro_rules! log {
-	($level:tt, $patter:expr $(, $values:expr)* $(,)?) => {
-		log::$level!(
-			target: LOG_TARGET,
-			$patter $(, $values)*
-		)
-	};
-}
-
-#[macro_export]
-macro_rules! decl_tx {
-	(
-		$(
-			fn $name:ident(
-				$runtime:ident,
-				$origin:ident
-				$(, $arg_name:ident : $arg_value:ty)* $(,)?
-			) {  $( $impl:tt )* }
-		)*
-
-	) => {
-		$(
-			fn $name<
-				R: $crate::ModuleRuntime
-			>(
-				$runtime: &R,
-				$origin: $crate::AccountId
-				$(, $arg_name: $arg_value)*
-			) -> $crate::DispatchResult {
-				$( $impl )*
-			}
-		)*
-	};
-}
-
+/// The error types returned from a dispatch function.
+///
+/// This is only used internally in this crate.
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum DispatchError {
 	/// The dispatch attempted at modifying a state key which has been tainted.
@@ -72,6 +41,49 @@ pub enum DispatchError {
 	Tainted(ThreadId, bool),
 	/// The transaction had a logical error.
 	LogicError(&'static str),
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+pub enum RuntimeDispatchSuccess {
+	/// Execution went fine.
+	Ok,
+	/// Execution had a logical error.
+	LogicError(&'static str),
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+pub enum RuntimeDispatchError {
+	/// The dispatch attempted at modifying a state key which has been tainted.
+	Tainted(ThreadId, bool),
+}
+
+/// The result of a dispatch.
+///
+/// This is used internally.
+// TODO: ideally this should be pub(crate)
+pub type DispatchResult = Result<(), DispatchError>;
+
+/// The final result of the execution of a dispatch.
+///
+/// This is similar to `DispatchResult`, except that a logical error is technically `Ok`.
+/// Only error is due to tainting.
+pub type RuntimeDispatchResult = Result<RuntimeDispatchSuccess, RuntimeDispatchError>;
+
+/// Conversion trait between `DispatchResult` and `RuntimeDispatchResult`.
+trait ToRuntimeDispatchResult {
+	fn to_runtime_dispatch_result(self) -> RuntimeDispatchResult;
+}
+
+impl ToRuntimeDispatchResult for DispatchResult {
+	fn to_runtime_dispatch_result(self) -> RuntimeDispatchResult {
+		match self {
+			Ok(_) => Ok(RuntimeDispatchSuccess::Ok),
+			Err(DispatchError::LogicError(why)) => Ok(RuntimeDispatchSuccess::LogicError(why)),
+			Err(DispatchError::Tainted(whom, orphan)) => {
+				Err(RuntimeDispatchError::Tainted(whom, orphan))
+			}
+		}
+	}
 }
 
 /// Extension trait to convert the result of storage operations to another result with
@@ -100,9 +112,6 @@ impl<T> UnwrapStorageOp<T> for Result<T, primitives::ThreadId> {
 	}
 }
 
-/// The result of a dispatch.
-pub type DispatchResult = Result<(), DispatchError>;
-
 /// The result of the validation of a dispatchable.
 pub type ValidationResult = Result<Vec<primitives::Key>, ()>;
 
@@ -127,9 +136,11 @@ pub trait DispatchPermission {}
 /// The outer call of the runtime.
 ///
 /// This is an encoding of all the transactions that can be executed.
+// TODO: macro for this as well.
 #[derive(Debug, Clone, Eq, PartialEq, Encode, Decode)]
 pub enum OuterCall {
 	Balances(balances::Call),
+	Staking(staking::Call),
 }
 
 impl<R: ModuleRuntime> Dispatchable<R> for OuterCall {
@@ -138,6 +149,9 @@ impl<R: ModuleRuntime> Dispatchable<R> for OuterCall {
 			OuterCall::Balances(inner_call) => {
 				<balances::Call as Dispatchable<R>>::dispatch::<T>(inner_call, &runtime, origin)
 			}
+			OuterCall::Staking(inner_call) => {
+				<staking::Call as Dispatchable<R>>::dispatch::<T>(inner_call, &runtime, origin)
+			}
 		}
 	}
 
@@ -145,6 +159,9 @@ impl<R: ModuleRuntime> Dispatchable<R> for OuterCall {
 		match self {
 			OuterCall::Balances(inner_call) => {
 				<balances::Call as Dispatchable<R>>::validate(inner_call, runtime, origin)
+			}
+			OuterCall::Staking(inner_call) => {
+				<staking::Call as Dispatchable<R>>::validate(inner_call, &runtime, origin)
 			}
 		}
 	}
@@ -196,7 +213,7 @@ impl WorkerRuntime {
 	/// Dispatch a call.
 	///
 	/// Note that this will use a fresh new cache for the dispatch, and then
-	pub fn dispatch(&self, call: OuterCall, origin: AccountId) -> DispatchResult {
+	pub fn dispatch(&self, call: OuterCall, origin: AccountId) -> RuntimeDispatchResult {
 		// the cache must always be empty at the beginning of a dispatch.
 		debug_assert_eq!(self.cache.borrow().keys().len(), 0);
 
@@ -220,7 +237,7 @@ impl WorkerRuntime {
 
 		// clear the cache anyhow.
 		self.cache.borrow_mut().clear();
-		dispatch_result
+		dispatch_result.to_runtime_dispatch_result()
 	}
 
 	/// commit the cache to the persistent state.
@@ -299,8 +316,9 @@ impl MasterRuntime {
 	}
 
 	/// Dispatch a call.
-	pub fn dispatch(&self, call: OuterCall, origin: AccountId) -> DispatchResult {
+	pub fn dispatch(&self, call: OuterCall, origin: AccountId) -> RuntimeDispatchResult {
 		<OuterCall as Dispatchable<Self>>::dispatch::<Self>(call, self, origin)
+			.to_runtime_dispatch_result()
 	}
 
 	/// Validate a call.

@@ -18,7 +18,7 @@ use worker::*;
 /// A concurrent executor.
 #[derive(Debug)]
 pub struct ConcurrentExecutor<P: TransactionPool<Transaction>, D: Distributer> {
-	pub(crate) master: Master<P, D>,
+	pub master: Master<P, D>,
 }
 
 impl<P: TransactionPool<Transaction>, D: Distributer> ConcurrentExecutor<P, D> {
@@ -125,6 +125,12 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Executor for ConcurrentExe
 	fn validate_block(&mut self, block: Block) -> StateMap {
 		self.master.validate_block(block)
 	}
+
+	fn apply_state(&mut self, state: StateMap) {
+		for (k, v) in state.into_iter() {
+			self.master.state.unsafe_insert(&k, v);
+		}
+	}
 }
 
 #[cfg(test)]
@@ -134,6 +140,7 @@ mod concurrent_executor {
 	use crate::*;
 	use logging::init_logger;
 	use primitives::testing::*;
+	use runtime::MasterRuntime;
 	use types::transaction_generator;
 
 	#[test]
@@ -148,21 +155,6 @@ mod concurrent_executor {
 		master.run_test();
 
 		assert!(master.join_all().is_ok())
-	}
-
-	#[test]
-	fn empty_setup_works_authoring_1() {
-		// TODO: this test must technically go to teh master file.
-		init_logger();
-
-		let executor = ConcurrentExecutor::<Pool, RoundRobin>::new(3, false, None);
-		let mut master = executor.master;
-		std::thread::sleep(std::time::Duration::from_millis(200));
-		assert_eq!(master.workers.len(), 3);
-
-		master.run_author();
-		master.run_terminate();
-		assert!(master.join_all().is_ok());
 	}
 
 	#[test]
@@ -186,9 +178,27 @@ mod concurrent_executor {
 		std::thread::sleep(std::time::Duration::from_millis(200));
 		assert_eq!(executor.master.workers.len(), 3);
 
-		executor.author_and_validate(vec![]);
+		assert!(executor.author_and_validate(vec![], None));
+
 		executor.master.run_terminate();
 		assert!(executor.master.join_all().is_ok());
+	}
+
+	#[test]
+	fn validation_authoring_works_bank() {
+		logging::init_logger();
+		let mut executor = ConcurrentExecutor::<Pool, RoundRobin>::new(3, false, None);
+		let (transactions, accounts) = transaction_generator::bank(5, 20);
+
+		// TODO: this is simply too much hassle to setup. We need a bloody macro or something for
+		// this to easily setup mock states.
+		let initial_state = State::new();
+		let initial_state_rt = MasterRuntime::new(initial_state.as_arc(), 999);
+		accounts
+			.into_iter()
+			.for_each(|acc| transaction_generator::endow_account(acc, &initial_state_rt, 100_000));
+
+		assert!(executor.author_and_validate(transactions, Some(initial_state_rt.state.dump())));
 	}
 
 	#[test]
@@ -312,6 +322,7 @@ mod concurrent_executor {
 						.iter()
 						.for_each(|t| master.tx_pool.push_back(t.clone()));
 
+					// TODO: call this from executor, not the master.
 					master.run_author();
 					master.run_terminate();
 					assert!(master.join_all().is_ok());

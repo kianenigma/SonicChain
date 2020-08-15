@@ -8,14 +8,10 @@ edition = "2018"
 runtime = { path =  "../runtime" }
 state = { path =  "../state" }
 primitives = { path = "../primitives" }
-
+logging = { path = "../logging" }
 parity-scale-codec = { version = "1.3.1", features = ["derive"] }
-
 num_cpus = "1.13.0"
-log = "0.4.8"
-env_logger = "0.7.1"
-chrono = "0.4.11"
-colored = "1.9"
 rand = "0.7.3"
+log = "0.4.8"
 
 [dev-dependencies]

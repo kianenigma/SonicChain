@@ -2,8 +2,9 @@ use crate::{
 	types::{ExecutionStatus, Message, MessagePayload, TaskType, Transaction, TransactionStatus},
 	State,
 };
+use logging::log;
 use primitives::{ThreadId, TransactionId};
-use runtime::{DispatchError, DispatchResult, MasterRuntime, WorkerRuntime};
+use runtime::{MasterRuntime, RuntimeDispatchError, RuntimeDispatchSuccess, WorkerRuntime};
 use std::collections::BTreeMap;
 use std::{
 	sync::{
@@ -15,20 +16,13 @@ use std::{
 
 const LOG_TARGET: &'static str = "worker";
 
-macro_rules! log {
-	($level:tt, $patter:expr $(, $values:expr)* $(,)?) => {
-		log::$level!(
-			target: LOG_TARGET,
-			$patter $(, $values)*
-		)
-	};
-}
-
 /// The execution outcome of a transaction.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum ExecutionOutcome {
-	/// This transaction was executed successfully with the contained dispatch result.
-	Executed(DispatchResult),
+	/// This transaction was executed successfully with the contained dispatch success.
+	///
+	/// This can in essence be either Ok or Logical error, not a taint error.
+	Executed(RuntimeDispatchSuccess),
 	/// This transaction was forwarded to another worker thread with the given thread id.
 	Forwarded(ThreadId),
 	/// This transaction was forwarded to master as Orphan.
@@ -173,7 +167,7 @@ impl Worker {
 
 		// report back to master and done.
 		self.to_master
-			.send(MessagePayload::ConcurrentPhaseReportValidation.into())
+			.send(MessagePayload::ValidationReport.into())
 			.expect("Broadcast should work");
 	}
 
@@ -231,7 +225,7 @@ impl Worker {
 			};
 		}
 
-		let message = MessagePayload::ConcurrentPhaseReport(executed, forwarded).into();
+		let message = MessagePayload::AuthoringReport(executed, forwarded).into();
 		log!(info, "Sending report {:?}", message);
 		self.to_master
 			.send(message)
@@ -242,7 +236,7 @@ impl Worker {
 	///
 	/// If execution went okay, returns `Ok(())`, else, it returns the thread id of the owner of the
 	/// transaction.
-	pub(crate) fn execute_transaction(&self, tx: Transaction) -> runtime::DispatchResult {
+	pub(crate) fn execute_transaction(&self, tx: Transaction) -> runtime::RuntimeDispatchResult {
 		let call = tx.function;
 		let origin = tx.signature.0;
 		self.runtime.dispatch(call, origin)
@@ -262,7 +256,7 @@ impl Worker {
 		// keep tx id because we don't need the rest, move the tx object to the function.
 		let tid = tx.id;
 		let exec_status = tx.exec_status;
-		let execution_outcome = self.execute_transaction(tx.clone());
+		let rt_dispatch_result = self.execute_transaction(tx.clone());
 
 		let forward_to_master = |tid: TransactionId| -> ExecutionOutcome {
 			let msg = MessagePayload::WorkerOrphan(tid).into();
@@ -289,37 +283,56 @@ impl Worker {
 				.expect("Send to master should work; qed.");
 		};
 
-		let final_outcome = match execution_outcome {
-			Err(err) => {
-				match (err, exec_status) {
-					(DispatchError::Tainted(owner, corrupt), ExecutionStatus::Initial) => {
-						if corrupt {
-							forward_to_master(tid)
-						} else {
-							forward_to_worker(tx.clone(), owner)
-						}
+		let final_outcome = match rt_dispatch_result {
+			Err(RuntimeDispatchError::Tainted(by_whom, corrupt)) => {
+				if exec_status == ExecutionStatus::Initial {
+					if corrupt {
+						forward_to_master(tid)
+					} else {
+						forward_to_worker(tx.clone(), by_whom)
 					}
-					(DispatchError::Tainted(_, _), ExecutionStatus::Forwarded) => {
-						forward_to_master(tx.id)
-					}
-					(DispatchError::LogicError(why), ExecutionStatus::Initial) => {
-						// logical error and initial, all good, do nothing.
-						ExecutionOutcome::Executed(Err(DispatchError::LogicError(why)))
-					}
-					(DispatchError::LogicError(why), ExecutionStatus::Forwarded) => {
-						// it was an error and it was forwarded. Report to master.
-						report_execution(tid);
-						ExecutionOutcome::Executed(Err(DispatchError::LogicError(why)))
-					}
+				} else {
+					forward_to_master(tid)
 				}
 			}
-			Ok(_) => {
+			Ok(ok) => {
 				if exec_status == ExecutionStatus::Forwarded {
-					report_execution(tid)
+					report_execution(tid);
 				}
-				ExecutionOutcome::Executed(Ok(()))
+				ExecutionOutcome::Executed(ok)
 			}
 		};
+		// let final_outcome = match rt_dispatch_result {
+		// 	Err(err) => {
+		// 		match (err, exec_status) {
+		// 			(DispatchError::Tainted(owner, corrupt), ExecutionStatus::Initial) => {
+		// 				if corrupt {
+		// 					forward_to_master(tid)
+		// 				} else {
+		// 					forward_to_worker(tx.clone(), owner)
+		// 				}
+		// 			}
+		// 			(DispatchError::Tainted(_, _), ExecutionStatus::Forwarded) => {
+		// 				forward_to_master(tx.id)
+		// 			}
+		// 			(DispatchError::LogicError(why), ExecutionStatus::Initial) => {
+		// 				// logical error and initial, all good, do nothing.
+		// 				ExecutionOutcome::Executed(Err(DispatchError::LogicError(why)))
+		// 			}
+		// 			(DispatchError::LogicError(why), ExecutionStatus::Forwarded) => {
+		// 				// it was an error and it was forwarded. Report to master.
+		// 				report_execution(tid);
+		// 				ExecutionOutcome::Executed(Err(DispatchError::LogicError(why)))
+		// 			}
+		// 		}
+		// 	}
+		// 	Ok(_) => {
+		// 		if exec_status == ExecutionStatus::Forwarded {
+		// 			report_execution(tid)
+		// 		}
+		// 		ExecutionOutcome::Executed(Ok(()))
+		// 	}
+		// };
 
 		log!(trace, "execute or forward {:?} => {:?}", tx, final_outcome);
 		final_outcome
@@ -440,7 +453,7 @@ mod worker_test_validation {
 		// We will send this back to maser.
 		assert!(matches!(
 			master_rx.recv().unwrap().payload,
-			MessagePayload::ConcurrentPhaseReportValidation
+			MessagePayload::ValidationReport
 		))
 	}
 }
@@ -485,7 +498,7 @@ mod worker_test_authoring {
 		// because alice has no funds yet.
 		assert!(matches!(
 			worker.execute_or_forward(tx.clone()),
-			ExecutionOutcome::Executed(Err(e)) if e == DispatchError::LogicError("Does not have enough funds.")
+			ExecutionOutcome::Executed(ok) if ok == RuntimeDispatchSuccess::LogicError("Does not have enough funds.")
 		));
 
 		// give alice some funds.
@@ -494,7 +507,7 @@ mod worker_test_authoring {
 		// now alice has some funds.
 		assert!(matches!(
 			worker.execute_or_forward(tx),
-			ExecutionOutcome::Executed(Ok(_))
+			ExecutionOutcome::Executed(RuntimeDispatchSuccess::Ok)
 		));
 
 		// Nothing has been sent to master.
@@ -581,7 +594,7 @@ mod worker_test_authoring {
 		// because alice has no funds yet.
 		assert!(matches!(
 			worker.execute_or_forward(tx.clone()),
-			ExecutionOutcome::Executed(Err(e)) if e == DispatchError::LogicError("Does not have enough funds.")
+			ExecutionOutcome::Executed(ok) if ok == RuntimeDispatchSuccess::LogicError("Does not have enough funds.")
 		));
 
 		// master should have received a notification now.
