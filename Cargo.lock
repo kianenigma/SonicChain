@@ -37,6 +37,7 @@ name = "benchmarks"
 version = "0.1.0"
 dependencies = [
  "executor",
+ "logging",
  "primitives",
  "runtime",
  "state",

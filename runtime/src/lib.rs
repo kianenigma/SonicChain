@@ -2,13 +2,10 @@ use logging::log;
 use parity_scale_codec::{Decode, Encode};
 use primitives::*;
 use state::{GenericState, TaintState};
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
 pub mod balances;
-pub mod decl_storage;
-pub mod decl_tx;
+mod macros;
 pub mod staking;
 
 // re-export macros.
@@ -133,39 +130,12 @@ pub trait Dispatchable<R: ModuleRuntime> {
 /// Marker trait for those who have permission to dispatch.
 pub trait DispatchPermission {}
 
-/// The outer call of the runtime.
-///
-/// This is an encoding of all the transactions that can be executed.
-// TODO: macro for this as well.
-#[derive(Debug, Clone, Eq, PartialEq, Encode, Decode)]
-pub enum OuterCall {
-	Balances(balances::Call),
-	Staking(staking::Call),
-}
-
-impl<R: ModuleRuntime> Dispatchable<R> for OuterCall {
-	fn dispatch<T: DispatchPermission>(self, runtime: &R, origin: AccountId) -> DispatchResult {
-		match self {
-			OuterCall::Balances(inner_call) => {
-				<balances::Call as Dispatchable<R>>::dispatch::<T>(inner_call, &runtime, origin)
-			}
-			OuterCall::Staking(inner_call) => {
-				<staking::Call as Dispatchable<R>>::dispatch::<T>(inner_call, &runtime, origin)
-			}
-		}
+decl_outer_call!(
+	pub enum OuterCall {
+		Balances(balances::Call),
+		Staking(staking::Call),
 	}
-
-	fn validate(&self, runtime: &R, origin: AccountId) -> ValidationResult {
-		match self {
-			OuterCall::Balances(inner_call) => {
-				<balances::Call as Dispatchable<R>>::validate(inner_call, runtime, origin)
-			}
-			OuterCall::Staking(inner_call) => {
-				<staking::Call as Dispatchable<R>>::validate(inner_call, &runtime, origin)
-			}
-		}
-	}
-}
+);
 
 /// Interface of the runtime that will be available to each module.
 pub trait ModuleRuntime {
@@ -186,10 +156,14 @@ pub trait ModuleRuntime {
 	fn mutate(&self, key: &Key, update: impl Fn(&mut Value) -> ()) -> Result<(), ThreadId>;
 }
 
-/// A runtime that should be used with worker thread.
+/// A runtime that assumes multiple concurrent instances of itself are existing within threads. All
+/// storage operations are checked to be correct. Only storage keys that belong to `self.id` can be
+/// accessed. Upon successful access, the key is tainted.
+///
+/// This should be used within the worker threads.
 ///
 /// This will cache writes and only applies them to storage at the very end.
-pub struct WorkerRuntime {
+pub struct ConcurrentRuntime {
 	/// The state pointer.
 	state: Arc<RuntimeState>,
 	/// Thread local state cache.
@@ -198,9 +172,9 @@ pub struct WorkerRuntime {
 	id: ThreadId,
 }
 
-impl DispatchPermission for WorkerRuntime {}
+impl DispatchPermission for ConcurrentRuntime {}
 
-impl WorkerRuntime {
+impl ConcurrentRuntime {
 	/// Create a new runtime.
 	pub fn new(state: Arc<RuntimeState>, id: ThreadId) -> Self {
 		Self {
@@ -242,12 +216,10 @@ impl WorkerRuntime {
 
 	/// commit the cache to the persistent state.
 	pub fn commit_cache(&self) {
-		// FIXME: we can use unsafe insert here; we know that we own this shit. For the real
-		// benchmarks, change this.
 		self.cache.borrow().iter().for_each(|(k, v)| {
+			debug_assert_eq!(self.state.unsafe_read_taint(k).unwrap(), self.id);
 			self.state
-				.write(k, v.clone(), self.id)
-				.expect("We own the data")
+				.unsafe_insert(k, state::StateEntry::new(v.to_owned(), self.id));
 		});
 	}
 
@@ -257,7 +229,7 @@ impl WorkerRuntime {
 	}
 }
 
-impl ModuleRuntime for WorkerRuntime {
+impl ModuleRuntime for ConcurrentRuntime {
 	const LIMITED: bool = true;
 
 	fn thread_id(&self) -> ThreadId {
@@ -295,21 +267,22 @@ impl ModuleRuntime for WorkerRuntime {
 	}
 }
 
-/// A runtime that can be used by the master thread.
+/// A runtime that assumes it is being used in a sequential manner. All storage operations are done
+/// in an unsafe manner, i.e. not taint values are checked.
 ///
-/// This runtime will not really care about thread ids and tainting and eagerly read/write from/to
-/// the storage.
+/// This should be used within the master threads for orphan execution, or for a sequential
+/// execution (and, of course for testing where you don't care about tainting).
 #[derive(Debug, Default)]
-pub struct MasterRuntime {
+pub struct SequentialRuntime {
 	/// The state.
 	pub state: Arc<RuntimeState>,
 	/// The thread id.
 	pub id: ThreadId,
 }
 
-impl DispatchPermission for MasterRuntime {}
+impl DispatchPermission for SequentialRuntime {}
 
-impl MasterRuntime {
+impl SequentialRuntime {
 	/// Create new master runtime.
 	pub fn new(state: Arc<RuntimeState>, id: ThreadId) -> Self {
 		Self { state, id }
@@ -327,7 +300,7 @@ impl MasterRuntime {
 	}
 }
 
-impl ModuleRuntime for MasterRuntime {
+impl ModuleRuntime for SequentialRuntime {
 	const LIMITED: bool = false;
 
 	fn thread_id(&self) -> ThreadId {
@@ -352,16 +325,16 @@ impl ModuleRuntime for MasterRuntime {
 }
 
 #[cfg(test)]
-mod worker_runtime_test {
+mod concurrent_runtime_test {
 	use super::*;
 	use primitives::*;
 	use std::sync::Arc;
 
 	#[test]
-	fn basic_worker_runtime_works() {
+	fn basic_concurrent_runtime_works() {
 		let state = RuntimeState::new().as_arc();
 		let k1: StateKey = vec![1u8].into();
-		let rt = WorkerRuntime::new(state, 1);
+		let rt = ConcurrentRuntime::new(state, 1);
 
 		let r: Vec<u8> = rt.read(&k1).unwrap().0;
 		assert_eq!(r, vec![]);
@@ -374,10 +347,10 @@ mod worker_runtime_test {
 	}
 
 	#[test]
-	fn worker_runtime_fails_if_tainted() {
+	fn concurrent_runtime_fails_if_tainted() {
 		let state = RuntimeState::new().as_arc();
 		let k1: StateKey = vec![1u8].into();
-		let rt = WorkerRuntime::new(Arc::clone(&state), 1);
+		let rt = ConcurrentRuntime::new(Arc::clone(&state), 1);
 
 		// current runtime is 1, taint with 2.
 		state.unsafe_insert(&k1, state::StateEntry::new_taint(2));
@@ -393,7 +366,7 @@ mod worker_runtime_test {
 
 		let state_ptr = Arc::clone(&state);
 		std::thread::spawn(move || {
-			let runtime = WorkerRuntime::new(state_ptr, 1);
+			let runtime = ConcurrentRuntime::new(state_ptr, 1);
 			let tx =
 				OuterCall::Balances(balances::Call::Transfer(testing::random().public(), 1000));
 			assert!(runtime
@@ -404,7 +377,7 @@ mod worker_runtime_test {
 
 		let state_ptr = Arc::clone(&state);
 		std::thread::spawn(move || {
-			let runtime = WorkerRuntime::new(state_ptr, 2);
+			let runtime = ConcurrentRuntime::new(state_ptr, 2);
 			let tx =
 				OuterCall::Balances(balances::Call::Transfer(testing::random().public(), 1000));
 			assert!(runtime
@@ -415,11 +388,11 @@ mod worker_runtime_test {
 	}
 
 	#[test]
-	fn worker_runtime_caching_works() {
+	fn concurrent_runtime_caching_works() {
 		let state = RuntimeState::new().as_arc();
 		let k1: StateKey = vec![1u8].into();
 		let k2: StateKey = vec![2u8].into();
-		let rt = WorkerRuntime::new(Arc::clone(&state), 1);
+		let rt = ConcurrentRuntime::new(Arc::clone(&state), 1);
 
 		assert!(rt.read(&k1).is_ok());
 		assert!(rt.read(&k2).is_ok());
@@ -447,14 +420,14 @@ mod worker_runtime_test {
 }
 
 #[cfg(test)]
-mod master_runtime_test {
+mod sequnetial_runtime_test {
 	use super::*;
 
 	#[test]
-	fn basic_master_runtime_works() {
+	fn basic_sequnetial_runtime_works() {
 		let state = RuntimeState::new().as_arc();
 		let k1: StateKey = vec![1u8].into();
-		let rt = MasterRuntime::new(state, 1);
+		let rt = SequentialRuntime::new(state, 1);
 
 		let r: Vec<u8> = rt.read(&k1).unwrap().0;
 		assert_eq!(r, vec![]);
@@ -467,10 +440,10 @@ mod master_runtime_test {
 	}
 
 	#[test]
-	fn master_runtime_works_regardless_of_taint() {
+	fn sequnetial_runtime_works_regardless_of_taint() {
 		let state = RuntimeState::new().as_arc();
 		let k1: StateKey = vec![1u8].into();
-		let rt = MasterRuntime::new(Arc::clone(&state), 1);
+		let rt = SequentialRuntime::new(Arc::clone(&state), 1);
 
 		// current runtime is 1, taint with 2.
 		state.unsafe_insert(&k1, state::StateEntry::new_taint(2));

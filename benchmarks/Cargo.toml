@@ -9,3 +9,4 @@ executor = { path = "../executor" }
 primitives = { path = "../primitives" }
 runtime = { path = "../runtime" }
 state = { path = "../state" }
+logging = { path = "../logging" }

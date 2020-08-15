@@ -1,15 +1,20 @@
-use crate::concurrent::tx_distribution::Distributer;
-use crate::types::{MessagePayload, TaskType, TransactionStatus};
-use crate::{pool::*, types::Message, Block, State, Transaction};
+use crate::{
+	concurrent::tx_distribution::Distributer,
+	pool::*,
+	types::{Message, MessagePayload, TaskType, TransactionStatus},
+	Block, State, Transaction,
+};
 use logging::log;
 use primitives::*;
 use runtime::StateMap;
-use std::collections::BTreeMap;
-use std::sync::{
-	mpsc::{Receiver, SendError, Sender},
-	Arc,
+use std::{
+	collections::BTreeMap,
+	sync::{
+		mpsc::{Receiver, SendError, Sender},
+		Arc,
+	},
+	thread::{self, JoinHandle},
 };
-use std::thread::{self, JoinHandle};
 
 const LOG_TARGET: &'static str = "master";
 
@@ -45,7 +50,7 @@ pub struct Master<P: TransactionPool<Transaction>, D> {
 	/// The orphan pool.
 	pub orphan_pool: Vec<Transaction>,
 	/// A master runtime used for orphan phase and validation.
-	pub runtime: runtime::MasterRuntime,
+	pub runtime: runtime::SequentialRuntime,
 	// Marker.
 	_marker: std::marker::PhantomData<D>,
 }
@@ -58,7 +63,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 		initial_state: Option<State>,
 	) -> Self {
 		let state: Arc<State> = initial_state.unwrap_or_default().into();
-		let runtime = runtime::MasterRuntime::new(Arc::clone(&state), id);
+		let runtime = runtime::SequentialRuntime::new(Arc::clone(&state), id);
 		Self {
 			id: id,
 			from_workers,
@@ -402,8 +407,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 #[cfg(test)]
 mod master_tests_single_worker {
 	use super::*;
-	use crate::concurrent::tx_distribution::RoundRobin;
-	use crate::types::*;
+	use crate::{concurrent::tx_distribution::RoundRobin, types::*};
 	use primitives::testing::*;
 	use std::sync::mpsc::*;
 
@@ -475,8 +479,7 @@ mod master_tests_single_worker {
 #[cfg(test)]
 mod master_tests_multi_worker {
 	use super::*;
-	use crate::concurrent::tx_distribution::RoundRobin;
-	use crate::types::*;
+	use crate::{concurrent::tx_distribution::RoundRobin, types::*};
 	use primitives::testing::*;
 	use std::sync::mpsc::*;
 

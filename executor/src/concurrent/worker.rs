@@ -4,9 +4,9 @@ use crate::{
 };
 use logging::log;
 use primitives::{ThreadId, TransactionId};
-use runtime::{MasterRuntime, RuntimeDispatchError, RuntimeDispatchSuccess, WorkerRuntime};
-use std::collections::BTreeMap;
+use runtime::{ConcurrentRuntime, RuntimeDispatchError, RuntimeDispatchSuccess, SequentialRuntime};
 use std::{
+	collections::BTreeMap,
 	sync::{
 		mpsc::{Receiver, Sender},
 		Arc,
@@ -40,9 +40,9 @@ pub struct Worker {
 	/// Note that the worker should typically only ever access the state through the runtime.
 	pub state: Arc<State>,
 	/// The runtime. This is used for authoring.
-	pub runtime: WorkerRuntime,
+	pub runtime: ConcurrentRuntime,
 	/// The master runtime. This is used for validation.
-	pub master_runtime: runtime::MasterRuntime,
+	pub sequnetial_runtime: runtime::SequentialRuntime,
 	/// Channel to send messages to master.
 	pub to_master: Sender<Message>,
 	/// Channel to receive data from the master.
@@ -63,14 +63,14 @@ impl Worker {
 		from_master: Receiver<Message>,
 		from_others: Receiver<Message>,
 	) -> Self {
-		let runtime = WorkerRuntime::new(state.clone(), id);
-		let master_runtime = MasterRuntime::new(state.clone(), id);
+		let runtime = ConcurrentRuntime::new(state.clone(), id);
+		let sequnetial_runtime = SequentialRuntime::new(state.clone(), id);
 		Self {
 			id,
 			master_id,
 			state,
 			runtime,
-			master_runtime,
+			sequnetial_runtime,
 			to_master,
 			from_master,
 			to_others: Default::default(),
@@ -153,7 +153,7 @@ impl Worker {
 						);
 						let origin = signature.0;
 						// we know that this transaction will not conflict with anyone else.
-						self.master_runtime
+						self.sequnetial_runtime
 							.dispatch(function, origin)
 							.expect("Executing transaction in the validation phase by thread should never fail");
 					}
@@ -375,12 +375,10 @@ impl Worker {
 #[cfg(test)]
 mod worker_test_validation {
 	use super::*;
-	use crate::types::transaction_generator;
-	use crate::types::MessagePayload;
+	use crate::types::{transaction_generator, MessagePayload};
 	use primitives::*;
 	use runtime::balances::*;
-	use std::matches;
-	use std::sync::mpsc::channel;
+	use std::{matches, sync::mpsc::channel};
 
 	const MASTER_ID: ThreadId = 99;
 
@@ -426,27 +424,36 @@ mod worker_test_validation {
 		);
 		transaction_generator::endow_account(
 			testing::alice().public(),
-			&worker.master_runtime,
+			&worker.sequnetial_runtime,
 			100,
 		);
 		worker.run_validate();
 
 		assert_eq!(
-			<BalanceOf<MasterRuntime>>::read(&worker.master_runtime, testing::alice().public())
-				.unwrap()
-				.free(),
+			<BalanceOf<SequentialRuntime>>::read(
+				&worker.sequnetial_runtime,
+				testing::alice().public()
+			)
+			.unwrap()
+			.free(),
 			80,
 		);
 		assert_eq!(
-			<BalanceOf<MasterRuntime>>::read(&worker.master_runtime, testing::bob().public())
-				.unwrap()
-				.free(),
+			<BalanceOf<SequentialRuntime>>::read(
+				&worker.sequnetial_runtime,
+				testing::bob().public()
+			)
+			.unwrap()
+			.free(),
 			10,
 		);
 		assert_eq!(
-			<BalanceOf<MasterRuntime>>::read(&worker.master_runtime, testing::dave().public())
-				.unwrap()
-				.free(),
+			<BalanceOf<SequentialRuntime>>::read(
+				&worker.sequnetial_runtime,
+				testing::dave().public()
+			)
+			.unwrap()
+			.free(),
 			10,
 		);
 
@@ -463,8 +470,7 @@ mod worker_test_authoring {
 	use super::*;
 	use primitives::*;
 	use runtime::balances::*;
-	use std::matches;
-	use std::sync::mpsc::channel;
+	use std::{matches, sync::mpsc::channel};
 
 	const OTHER_WORKER: ThreadId = 69;
 	const MASTER_ID: ThreadId = 99;
@@ -493,7 +499,7 @@ mod worker_test_authoring {
 		let (worker, _, master_rx) = test_worker();
 		let alice = testing::alice();
 		let (tx, alice) = test_tx(alice, 1);
-		let master_runtime = runtime::MasterRuntime::new(Arc::clone(&worker.state), 0);
+		let sequnetial_runtime = runtime::SequentialRuntime::new(Arc::clone(&worker.state), 0);
 
 		// because alice has no funds yet.
 		assert!(matches!(
@@ -502,7 +508,7 @@ mod worker_test_authoring {
 		));
 
 		// give alice some funds.
-		BalanceOf::write(&master_runtime, alice, 999.into()).unwrap();
+		BalanceOf::write(&sequnetial_runtime, alice, 999.into()).unwrap();
 
 		// now alice has some funds.
 		assert!(matches!(
@@ -519,7 +525,7 @@ mod worker_test_authoring {
 		assert_eq!(
 			worker
 				.state
-				.unsafe_read_taint(&<BalanceOf<WorkerRuntime>>::key_for(
+				.unsafe_read_taint(&<BalanceOf<ConcurrentRuntime>>::key_for(
 					testing::alice().public(),
 				))
 				.unwrap(),
@@ -529,7 +535,7 @@ mod worker_test_authoring {
 		assert_eq!(
 			worker
 				.state
-				.unsafe_read_taint(&<BalanceOf<WorkerRuntime>>::key_for(
+				.unsafe_read_taint(&<BalanceOf<ConcurrentRuntime>>::key_for(
 					testing::bob().public(),
 				))
 				.unwrap(),
@@ -544,7 +550,7 @@ mod worker_test_authoring {
 		let (tx, alice) = test_tx(alice, 1);
 
 		// manually taint the storage item of bob to some other thread.
-		let alice_key = <BalanceOf<WorkerRuntime>>::key_for(alice);
+		let alice_key = <BalanceOf<ConcurrentRuntime>>::key_for(alice);
 		worker
 			.state
 			.unsafe_insert(&alice_key, state::StateEntry::new_taint(OTHER_WORKER));
@@ -567,7 +573,7 @@ mod worker_test_authoring {
 		tx.exec_status = ExecutionStatus::Forwarded;
 
 		// manually taint the storage item of alice to some other thread.
-		let alice_key = <BalanceOf<WorkerRuntime>>::key_for(alice);
+		let alice_key = <BalanceOf<ConcurrentRuntime>>::key_for(alice);
 		worker
 			.state
 			.unsafe_insert(&alice_key, state::StateEntry::new_taint(OTHER_WORKER));

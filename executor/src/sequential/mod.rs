@@ -1,5 +1,4 @@
-use crate::State;
-use crate::*;
+use crate::{State, *};
 use runtime::*;
 use types::*;
 
@@ -11,14 +10,14 @@ const LOG_TARGET: &'static str = "seq-exec";
 /// master or worker. All state operations are done in an unsafe manner, assuming that there will be
 /// no other concurrent thread.
 pub struct SequentialExecutor {
-	pub runtime: MasterRuntime,
+	pub runtime: SequentialRuntime,
 }
 
 impl SequentialExecutor {
 	pub fn new() -> Self {
 		let id = std::thread::current().id().as_u64().into();
 		let state = State::new().as_arc();
-		let runtime = MasterRuntime::new(state, id);
+		let runtime = SequentialRuntime::new(state, id);
 		Self { runtime }
 	}
 
@@ -85,7 +84,7 @@ mod tests {
 		assert_eq!(block.transactions.len(), 2);
 		assert_eq!(
 			state
-				.get(&<BalanceOf<MasterRuntime>>::key_for(
+				.get(&<BalanceOf<SequentialRuntime>>::key_for(
 					testing::alice().public()
 				))
 				.unwrap()
@@ -94,7 +93,7 @@ mod tests {
 		);
 		assert_eq!(
 			state
-				.get(&<BalanceOf<MasterRuntime>>::key_for(
+				.get(&<BalanceOf<SequentialRuntime>>::key_for(
 					testing::bob().public()
 				))
 				.unwrap()
@@ -103,7 +102,7 @@ mod tests {
 		);
 		assert_eq!(
 			state
-				.get(&<BalanceOf<MasterRuntime>>::key_for(
+				.get(&<BalanceOf<SequentialRuntime>>::key_for(
 					testing::dave().public()
 				))
 				.unwrap()
@@ -127,7 +126,7 @@ mod tests {
 		let validation_state = executor.validate_block(block);
 		assert_eq!(
 			validation_state
-				.get(&<BalanceOf<MasterRuntime>>::key_for(
+				.get(&<BalanceOf<SequentialRuntime>>::key_for(
 					testing::alice().public()
 				))
 				.unwrap()
@@ -136,7 +135,7 @@ mod tests {
 		);
 		assert_eq!(
 			validation_state
-				.get(&<BalanceOf<MasterRuntime>>::key_for(
+				.get(&<BalanceOf<SequentialRuntime>>::key_for(
 					testing::bob().public()
 				))
 				.unwrap()
@@ -145,7 +144,7 @@ mod tests {
 		);
 		assert_eq!(
 			validation_state
-				.get(&<BalanceOf<MasterRuntime>>::key_for(
+				.get(&<BalanceOf<SequentialRuntime>>::key_for(
 					testing::dave().public()
 				))
 				.unwrap()
@@ -163,7 +162,7 @@ mod tests {
 		// TODO: this is simply too much hassle to setup. We need a bloody macro or something for
 		// this to easily setup mock states.
 		let initial_state = State::new();
-		let initial_state_rt = MasterRuntime::new(initial_state.as_arc(), 999);
+		let initial_state_rt = SequentialRuntime::new(initial_state.as_arc(), 999);
 		transaction_generator::endow_account(testing::alice().public(), &initial_state_rt, 100);
 
 		assert!(executor.author_and_validate(transactions, Some(initial_state_rt.state.dump())));

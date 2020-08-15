@@ -1,3 +1,69 @@
+#[macro_export]
+macro_rules! decl_outer_call {
+	(
+		$vis:vis enum $outer_call_name:ident {
+			$(
+				$module_name:ident($inner_call_path:path),
+			)*
+		}
+	) => {
+		#[derive(Debug, Clone, Eq, PartialEq, Encode, Decode)]
+		$vis enum $outer_call_name {
+			$(
+				$module_name($inner_call_path)
+			),*
+		}
+
+		impl<R: $crate::ModuleRuntime> $crate::Dispatchable<R> for $outer_call_name {
+			fn dispatch<T: $crate::DispatchPermission>(self, runtime: &R, origin: $crate::AccountId) -> $crate::DispatchResult {
+				match self {
+					$(
+						$outer_call_name::$module_name(inner_call) => {
+							<$inner_call_path as $crate::Dispatchable<R>>::dispatch::<T>(inner_call, runtime, origin)
+						}
+					)*
+				}
+			}
+
+			fn validate(&self, runtime: &R, origin: $crate::AccountId) -> $crate::ValidationResult {
+				match self {
+					$(
+						$outer_call_name::$module_name(inner_call) => {
+							<$inner_call_path as $crate::Dispatchable<R>>::validate(inner_call, runtime, origin)
+						}
+					)*
+				}
+			}
+		}
+	};
+}
+
+#[macro_export]
+macro_rules! decl_tx {
+	(
+		$(
+			fn $name:ident(
+				$runtime:ident,
+				$origin:ident
+				$(, $arg_name:ident : $arg_value:ty)* $(,)?
+			) {  $( $impl:tt )* }
+		)*
+
+	) => {
+		$(
+			fn $name<
+				R: $crate::ModuleRuntime
+			>(
+				$runtime: &R,
+				$origin: $crate::AccountId
+				$(, $arg_name: $arg_value)*
+			) -> $crate::DispatchResult {
+				$( $impl )*
+			}
+		)*
+	};
+}
+
 /// Create a storage map struct.
 #[macro_export]
 macro_rules! decl_storage_map {
@@ -108,11 +174,10 @@ macro_rules! decl_storage_value {
 
 #[cfg(test)]
 #[allow(dead_code)]
-mod tests {
-	use crate::{RuntimeState, WorkerRuntime};
+mod tests_storage_macros {
+	use crate::{ConcurrentRuntime, RuntimeState};
 	use parity_scale_codec::{Decode, Encode};
-	use primitives::testing;
-	use primitives::AccountId;
+	use primitives::{testing, AccountId};
 
 	const MODULE: &'static str = "test";
 
@@ -126,7 +191,7 @@ mod tests {
 	#[test]
 	fn map_account_id_default_works() {
 		let state = RuntimeState::new().as_arc();
-		let rt = WorkerRuntime::new(state, 0);
+		let rt = ConcurrentRuntime::new(state, 0);
 
 		assert_eq!(
 			AccMap::read(&rt, testing::alice().public()).unwrap(),
@@ -137,7 +202,7 @@ mod tests {
 	#[test]
 	fn map_works() {
 		let state = RuntimeState::new().as_arc();
-		let rt = WorkerRuntime::new(state, 0);
+		let rt = ConcurrentRuntime::new(state, 0);
 
 		// reads default
 		assert_eq!(TestMap::read(&rt, 10), Ok(Something(0)));
@@ -172,7 +237,7 @@ mod tests {
 	#[test]
 	fn value_works() {
 		let state = RuntimeState::new().as_arc();
-		let rt = WorkerRuntime::new(state, 0);
+		let rt = ConcurrentRuntime::new(state, 0);
 
 		// reads default
 		assert_eq!(TestValue::read(&rt), Ok(vec![]));

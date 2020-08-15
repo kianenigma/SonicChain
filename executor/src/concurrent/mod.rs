@@ -2,13 +2,15 @@ pub mod master;
 pub mod tx_distribution;
 pub mod worker;
 
-use std::collections::BTreeMap;
-use std::sync::mpsc::{channel, Sender};
-use std::sync::Arc;
+use std::{
+	collections::BTreeMap,
+	sync::{
+		mpsc::{channel, Sender},
+		Arc,
+	},
+};
 
-use crate::pool::*;
-use crate::types::*;
-use crate::{Executor, State, StateMap};
+use crate::{pool::*, types::*, Executor, State, StateMap};
 use master::*;
 use primitives::*;
 use std::thread;
@@ -136,11 +138,10 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Executor for ConcurrentExe
 #[cfg(test)]
 mod concurrent_executor {
 	use super::*;
-	use crate::pool::TransactionPool;
-	use crate::*;
+	use crate::{pool::TransactionPool, *};
 	use logging::init_logger;
 	use primitives::testing::*;
-	use runtime::MasterRuntime;
+	use runtime::SequentialRuntime;
 	use types::transaction_generator;
 
 	#[test]
@@ -193,7 +194,7 @@ mod concurrent_executor {
 		// TODO: this is simply too much hassle to setup. We need a bloody macro or something for
 		// this to easily setup mock states.
 		let initial_state = State::new();
-		let initial_state_rt = MasterRuntime::new(initial_state.as_arc(), 999);
+		let initial_state_rt = SequentialRuntime::new(initial_state.as_arc(), 999);
 		accounts
 			.into_iter()
 			.for_each(|acc| transaction_generator::endow_account(acc, &initial_state_rt, 100_000));
@@ -298,38 +299,36 @@ mod concurrent_executor {
 				#[test]
 				fn $name() {
 					init_logger();
-					// TODO: sanity check. Why not run them also with seq-executor or something like
-					// that?
+					// NOTE: sanity check would be nice here, but we can't quite do this. We can't
+					// compare the output of this to a sequential execution, because it correctly
+					// may not be the same. This is indeed re-ordering the transactions. Best that
+					// we can do for now is to call author and validate so that we can be more or
+					// less sure that at least a concurrent validation will lead to the same result.
 					const NUM_ACCOUNTS: usize = 10;
 					const NUM_TXS: usize = 1_000;
 
-					let executor = ConcurrentExecutor::<Pool, $distribution>::new(4, false, None);
-					let mut master = executor.master;
+					let mut executor = ConcurrentExecutor::<Pool, $distribution>::new(4, false, None);
 					std::thread::sleep(std::time::Duration::from_millis(500));
-					assert_eq!(master.workers.len(), 4);
+					assert_eq!(executor.master.workers.len(), 4);
 
 					let (transfers, accounts) = transaction_generator::bank(NUM_ACCOUNTS, NUM_TXS);
 					accounts.iter().for_each(|acc| {
 						transaction_generator::endow_account(
 							*acc,
-							&master.runtime,
+							&executor.master.runtime,
 							1000_000_000_000,
 						)
 					});
 
-					// push all txs to master
-					transfers
-						.iter()
-						.for_each(|t| master.tx_pool.push_back(t.clone()));
+					executor.author_block(transfers);
 
-					// TODO: call this from executor, not the master.
-					master.run_author();
-					master.run_terminate();
-					assert!(master.join_all().is_ok());
+					executor.master.run_terminate();
+					assert!(executor.master.join_all().is_ok());
 				}
 			)*
 		}
 	}
 
 	bank_test_with_distribution!(RoundRobin, bank_round_robin,);
+	bank_test_with_distribution!(ConnectedComponentsDistributer, bank_connected_components,);
 }

@@ -3,7 +3,7 @@ use crate::{
 	types::{Transaction, TransactionStatus},
 };
 use primitives::*;
-use runtime::MasterRuntime;
+use runtime::SequentialRuntime;
 use std::matches;
 
 pub use node::ConnectedComponentsDistributer;
@@ -17,7 +17,7 @@ pub trait Distributer {
 	/// This will receive a mutable reference to the pool and will also update the `status` of each
 	/// transaction to `Done(_)`.
 	fn distribute<P: TransactionPool<Transaction>>(
-		runtime: &MasterRuntime,
+		runtime: &SequentialRuntime,
 		worker_ids: &[ThreadId],
 		txs: &mut P,
 	);
@@ -213,7 +213,7 @@ pub mod node {
 
 	impl Distributer for ConnectedComponentsDistributer {
 		fn distribute<P: TransactionPool<Transaction>>(
-			runtime: &MasterRuntime,
+			runtime: &SequentialRuntime,
 			worker_ids: &[ThreadId],
 			txs: &mut P,
 		) {
@@ -341,7 +341,7 @@ pub mod node {
 			let (load, _) = types::transaction_generator::bank(50, 10);
 			let mut pool = Pool::from(load);
 			let state = State::default().as_arc();
-			let rt = MasterRuntime::new(state, 1);
+			let rt = SequentialRuntime::new(state, 1);
 			let workers = vec![1, 2, 3];
 
 			// all the assertions are in the code.
@@ -355,7 +355,7 @@ pub struct RoundRobin;
 
 impl Distributer for RoundRobin {
 	fn distribute<P: TransactionPool<Transaction>>(
-		_: &MasterRuntime,
+		_: &SequentialRuntime,
 		worker_ids: &[ThreadId],
 		pool: &mut P,
 	) {

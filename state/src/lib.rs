@@ -1,10 +1,31 @@
 use logging::log;
-use std::cell::RefCell;
-use std::collections::hash_map::HashMap;
-use std::fmt::Debug;
-use std::sync::{Arc, RwLock};
+use std::{
+	cell::RefCell,
+	collections::hash_map::HashMap,
+	fmt::Debug,
+	sync::{Arc, RwLock},
+	time::Duration,
+};
 
 const LOG_TARGET: &'static str = "state";
+
+// TODO: for now I will sprinkle some manual sleeps here, but later on consider having some fancy
+// type like SlowMap that is a hashmap that sleeps upon both read and write.
+
+const READ_DELAY: Duration = Duration::from_millis(1);
+const WRITE_DELAY: Duration = Duration::from_millis(2);
+
+macro_rules! sleep_read {
+	() => {
+		std::thread::sleep(READ_DELAY);
+	};
+}
+
+macro_rules! write_sleep {
+	() => {
+		std::thread::sleep(WRITE_DELAY);
+	};
+}
 
 /// Extension trait to check the equality of two state dumps.
 ///
@@ -151,12 +172,13 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 
 	/// Unsafe implementation of insert. This will not respect the tainting of the key.
 	pub fn unsafe_insert(&self, at: &K, value: StateEntry<V, T>) {
+		write_sleep!();
 		self.backend.write().unwrap().insert(at.clone(), value);
 	}
 
-	/// Unsafe insert of a value, wiping away the taint value..
+	/// Unsafe insert of a value, wiping away the taint value.
 	pub fn unsafe_insert_genesis_value(&self, at: &K, value: V) {
-		logging::init_logger();
+		write_sleep!();
 		logging::log!(trace, "inserting genesis value at {:?} => {:?}", at, value);
 		self.backend
 			.write()
@@ -177,6 +199,7 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 	/// insert all the keys of the given state into self.
 	///
 	/// Infallible.
+	#[deprecated = "This is not used as far as I can see"]
 	pub fn unsafe_duplicate(&self, initial: Self) {
 		initial
 			.dump()
@@ -186,6 +209,7 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 
 	/// Clear the inner map.
 	pub fn unsafe_clean(&self) {
+		write_sleep!();
 		self.backend.write().unwrap().clear();
 	}
 
@@ -208,12 +232,14 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 
 	/// Unsafe implementation of read. This will not respect the tainting of the key.
 	fn unsafe_read(&self, key: &K) -> Option<StateEntry<V, T>> {
+		sleep_read!();
 		self.backend.read().unwrap().get(key).cloned()
 	}
 }
 
 impl<K: KeyT, V: ValueT, T: TaintT> GenericState<K, V, T> for TaintState<K, V, T> {
 	fn read(&self, key: &K, current: T) -> Result<V, T> {
+		sleep_read!();
 		let read_guard = self.backend.read().unwrap();
 
 		let outcome = if let Some(entry) = read_guard.get(key) {
@@ -274,6 +300,7 @@ impl<K: KeyT, V: ValueT, T: TaintT> GenericState<K, V, T> for TaintState<K, V, T
 	}
 
 	fn write(&self, key: &K, value: V, current: T) -> Result<(), T> {
+		write_sleep!();
 		let read_guard = self.backend.read().unwrap();
 		let outcome = if let Some(entry) = read_guard.get(key) {
 			if let Some(owner) = entry.taint {
@@ -334,8 +361,7 @@ impl<K: KeyT, V: ValueT, T: TaintT> GenericState<K, V, T> for TaintState<K, V, T
 #[cfg(test)]
 mod test_state {
 	use super::*;
-	use std::sync::Arc;
-	use std::thread;
+	use std::{sync::Arc, thread};
 
 	type Key = u32;
 	type Value = u32;

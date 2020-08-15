@@ -41,9 +41,9 @@ fn concurrent<D: tx_distribution::Distributer>() {
 }
 
 fn main() {
-	use tx_distribution::{ConnectedComponentsDistributer, RoundRobin};
-	// concurrent::<RoundRobin>();
-	// std::thread::sleep(std::time::Duration::from_secs(4));
+	use tx_distribution::ConnectedComponentsDistributer;
+	logging::init_logger();
+
 	concurrent::<ConnectedComponentsDistributer>();
 	std::thread::sleep(std::time::Duration::from_secs(4));
 	sequential();

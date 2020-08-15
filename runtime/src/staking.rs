@@ -1,6 +1,6 @@
-use crate::{balances::BalanceOf, decl_storage_map, decl_tx};
 use crate::{
-	DispatchError, DispatchResult, Dispatchable, ModuleRuntime, UnwrapStorageOp, ValidationResult,
+	balances::BalanceOf, decl_storage_map, decl_tx, DispatchError, DispatchResult, Dispatchable,
+	ModuleRuntime, UnwrapStorageOp, ValidationResult,
 };
 use parity_scale_codec::{Decode, Encode};
 use primitives::*;
@@ -597,5 +597,5 @@ macro_rules! test_with_rt {
 	};
 }
 
-test_with_rt!(crate::MasterRuntime, master_runtime);
-test_with_rt!(crate::WorkerRuntime, worker_runtime);
+test_with_rt!(crate::SequentialRuntime, sequnetial_runtime);
+test_with_rt!(crate::ConcurrentRuntime, concurrent_runtime);

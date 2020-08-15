@@ -112,7 +112,6 @@ decl_tx! {
 		dest: AccountId,
 		value: Balance,
 	) {
-		std::thread::sleep(std::time::Duration::from_millis(10));
 		// If we fail at this step, it is fine. We have not written anything yet.
 		let mut old_balance =
 			BalanceOf::read(runtime, origin).or_forward()?;
@@ -210,5 +209,5 @@ macro_rules! test_with_rt {
 	};
 }
 
-test_with_rt!(crate::WorkerRuntime, worker_runtime_test);
-test_with_rt!(crate::MasterRuntime, master_runtime_test);
+test_with_rt!(crate::ConcurrentRuntime, concurrent_runtime_test);
+test_with_rt!(crate::SequentialRuntime, sequnetial_runtime_test);
