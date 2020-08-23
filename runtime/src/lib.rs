@@ -60,9 +60,8 @@ pub enum RuntimeDispatchError {
 
 /// The result of a dispatch.
 ///
-/// This is used internally.
-// TODO: ideally this should be pub(crate)
-pub type DispatchResult = Result<(), DispatchError>;
+/// This is used internally, this pub(crate).
+pub(crate) type DispatchResult = Result<(), DispatchError>;
 
 /// The final result of the execution of a dispatch.
 ///
@@ -279,7 +278,10 @@ impl ModuleRuntime for ConcurrentRuntime {
 #[derive(Debug, Default)]
 pub struct SequentialRuntime {
 	/// The state.
-	// FIXME: This shall not even need a Arc!
+	///
+	/// Note that this is still an Arc because the runtime might be shared with another concurrent
+	/// runtime. This is perfectly fine as long as the owner of the two guarantees that the two
+	/// states are used exclusively.
 	pub state: Arc<RuntimeState>,
 	/// The thread id.
 	pub id: ThreadId,
@@ -425,11 +427,11 @@ mod concurrent_runtime_test {
 }
 
 #[cfg(test)]
-mod sequnetial_runtime_test {
+mod sequential_runtime_test {
 	use super::*;
 
 	#[test]
-	fn basic_sequnetial_runtime_works() {
+	fn basic_sequential_runtime_works() {
 		let state = RuntimeState::new().as_arc();
 		let k1: StateKey = vec![1u8].into();
 		let rt = SequentialRuntime::new(state, 1);
@@ -445,7 +447,7 @@ mod sequnetial_runtime_test {
 	}
 
 	#[test]
-	fn sequnetial_runtime_works_regardless_of_taint() {
+	fn sequential_runtime_works_regardless_of_taint() {
 		let state = RuntimeState::new().as_arc();
 		let k1: StateKey = vec![1u8].into();
 		let rt = SequentialRuntime::new(Arc::clone(&state), 1);

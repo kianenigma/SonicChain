@@ -6,15 +6,20 @@ use runtime::*;
 // FIXME: Timings are not really accurate yet.
 // FIXME: dataset: world of stakers
 // TODO: flaky predictions?
-// TODO: more complicated modules
+// TODO: more complicated modules: multiSig is fun?
 
 mod datasets {
 	use super::*;
+	use types::transaction_generator::*;
 
-	pub fn millionaires_playground<R: ModuleRuntime>(rt: &R) -> Vec<Transaction> {
-		use types::transaction_generator::*;
+	pub fn millionaires_playground<R: ModuleRuntime>(
+		rt: &R,
+		members: usize,
+		transfers: usize,
+	) -> Vec<Transaction> {
 		const AMOUNT: Balance = 100_000_000_000;
-		let (transactions, accounts) = bank(10_000, 5_000);
+
+		let (transactions, accounts) = bank(members, transfers);
 		accounts
 			.into_iter()
 			.for_each(|acc| endow_account(acc, rt, AMOUNT));
@@ -24,7 +29,7 @@ mod datasets {
 
 fn sequential() {
 	let mut executor = sequential::SequentialExecutor::new();
-	let dataset = datasets::millionaires_playground(&executor.runtime);
+	let dataset = datasets::millionaires_playground(&executor.runtime, 10_000, 5_000);
 
 	let start = std::time::Instant::now();
 	executor.author_block(dataset);
@@ -33,7 +38,7 @@ fn sequential() {
 
 fn concurrent<D: tx_distribution::Distributer>() {
 	let mut executor = concurrent::ConcurrentExecutor::<Pool, D>::new(4, false, None);
-	let dataset = datasets::millionaires_playground(&executor.master.runtime);
+	let dataset = datasets::millionaires_playground(&executor.master.runtime, 10_000, 5_000);
 
 	let start = std::time::Instant::now();
 	executor.author_block(dataset);

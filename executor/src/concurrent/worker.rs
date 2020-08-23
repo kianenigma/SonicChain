@@ -42,7 +42,7 @@ pub struct Worker {
 	/// The runtime. This is used for authoring.
 	pub runtime: ConcurrentRuntime,
 	/// The master runtime. This is used for validation.
-	pub sequnetial_runtime: runtime::SequentialRuntime,
+	pub sequential_runtime: runtime::SequentialRuntime,
 	/// Channel to send messages to master.
 	pub to_master: Sender<Message>,
 	/// Channel to receive data from the master.
@@ -64,13 +64,13 @@ impl Worker {
 		from_others: Receiver<Message>,
 	) -> Self {
 		let runtime = ConcurrentRuntime::new(state.clone(), id);
-		let sequnetial_runtime = SequentialRuntime::new(state.clone(), id);
+		let sequential_runtime = SequentialRuntime::new(state.clone(), id);
 		Self {
 			id,
 			master_id,
 			state,
 			runtime,
-			sequnetial_runtime,
+			sequential_runtime,
 			to_master,
 			from_master,
 			to_others: Default::default(),
@@ -153,7 +153,7 @@ impl Worker {
 						);
 						let origin = signature.0;
 						// we know that this transaction will not conflict with anyone else.
-						self.sequnetial_runtime
+						self.sequential_runtime
 							.dispatch(function, origin)
 							.expect("Executing transaction in the validation phase by thread should never fail");
 					}
@@ -424,14 +424,14 @@ mod worker_test_validation {
 		);
 		transaction_generator::endow_account(
 			testing::alice().public(),
-			&worker.sequnetial_runtime,
+			&worker.sequential_runtime,
 			100,
 		);
 		worker.run_validate();
 
 		assert_eq!(
 			<BalanceOf<SequentialRuntime>>::read(
-				&worker.sequnetial_runtime,
+				&worker.sequential_runtime,
 				testing::alice().public()
 			)
 			.unwrap()
@@ -440,7 +440,7 @@ mod worker_test_validation {
 		);
 		assert_eq!(
 			<BalanceOf<SequentialRuntime>>::read(
-				&worker.sequnetial_runtime,
+				&worker.sequential_runtime,
 				testing::bob().public()
 			)
 			.unwrap()
@@ -449,7 +449,7 @@ mod worker_test_validation {
 		);
 		assert_eq!(
 			<BalanceOf<SequentialRuntime>>::read(
-				&worker.sequnetial_runtime,
+				&worker.sequential_runtime,
 				testing::dave().public()
 			)
 			.unwrap()
@@ -499,7 +499,7 @@ mod worker_test_authoring {
 		let (worker, _, master_rx) = test_worker();
 		let alice = testing::alice();
 		let (tx, alice) = test_tx(alice, 1);
-		let sequnetial_runtime = runtime::SequentialRuntime::new(Arc::clone(&worker.state), 0);
+		let sequential_runtime = runtime::SequentialRuntime::new(Arc::clone(&worker.state), 0);
 
 		// because alice has no funds yet.
 		assert!(matches!(
@@ -508,7 +508,7 @@ mod worker_test_authoring {
 		));
 
 		// give alice some funds.
-		BalanceOf::write(&sequnetial_runtime, alice, 999.into()).unwrap();
+		BalanceOf::write(&sequential_runtime, alice, 999.into()).unwrap();
 
 		// now alice has some funds.
 		assert!(matches!(

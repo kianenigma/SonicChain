@@ -210,4 +210,4 @@ macro_rules! test_with_rt {
 }
 
 test_with_rt!(crate::ConcurrentRuntime, concurrent_runtime_test);
-test_with_rt!(crate::SequentialRuntime, sequnetial_runtime_test);
+test_with_rt!(crate::SequentialRuntime, sequential_runtime_test);
