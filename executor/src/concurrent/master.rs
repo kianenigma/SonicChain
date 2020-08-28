@@ -36,7 +36,7 @@ impl WorkerHandle {
 
 /// The master thread.
 #[derive(Debug)]
-pub struct Master<P: TransactionPool<Transaction>, D> {
+pub struct Master<P: TransactionPool<Transaction>, D: Distributer> {
 	/// The id of the thread.
 	pub id: ThreadId,
 	/// A map to all the workers and a [`WorkerHandle`] per each of them.

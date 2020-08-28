@@ -57,7 +57,7 @@ impl AccountBalance {
 	}
 
 	pub fn unreserve(&mut self, amount: Balance) -> Result<(), &'static str> {
-		if self.reserved > amount {
+		if self.reserved >= amount {
 			self.reserved -= amount;
 			self.free += amount;
 			Ok(())

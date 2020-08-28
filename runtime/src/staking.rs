@@ -2,8 +2,6 @@ use crate::{balances::BalanceOf, decl_storage_map, decl_tx, DispatchError, Unwra
 use parity_scale_codec::{Decode, Encode};
 use primitives::*;
 
-// TODO: if remaining is zero, then clean the dust.
-
 const MODULE: &'static str = "staking";
 
 /// A staker's role in the staking system.
@@ -36,6 +34,11 @@ decl_storage_map!(Bonded, "bonded", AccountId, AccountId);
 decl_storage_map!(Nominations, "nominations", AccountId, Vec<AccountId>);
 
 decl_tx! {
+	#[access = (|origin: Public| vec![
+		<BalanceOf<R>>::key_for(origin.clone()),
+		<Ledger<R>>::key_for(origin.clone()),
+		<Bonded<R>>::key_for(controller.clone()),
+	])]
 	fn tx_bond(rt, stash, amount: Balance, controller: AccountId) {
 		// check already bonded.
 		if Ledger::exists(rt, stash).or_forward()? {
@@ -57,6 +60,10 @@ decl_tx! {
 		Ok(())
 	}
 
+	#[access = (|origin: Public| vec![
+		<BalanceOf<R>>::key_for(origin.clone()),
+		<Ledger<R>>::key_for(origin.clone()),
+	])]
 	fn tx_bond_extra(rt, stash, amount: Balance) {
 		let mut ledger = Ledger::read(rt, stash).or_forward()?;
 		if ledger == StakingLedger::default() {
@@ -74,6 +81,10 @@ decl_tx! {
 		Ok(())
 	}
 
+	#[access = (|origin: Public| vec![
+		<BalanceOf<R>>::key_for(origin.clone()),
+		<Ledger<R>>::key_for(origin.clone()),
+	])]
 	fn tx_unbond(rt, stash, amount: Balance) {
 		let mut ledger = Ledger::read(rt, stash).or_forward()?;
 
@@ -85,6 +96,7 @@ decl_tx! {
 			return Err(DispatchError::LogicError("Too much unbonding."));
 		}
 
+		// dbg!(&ledger, <BalanceOf<R>>::read(rt, stash));
 		ledger.value = ledger.value.checked_sub(amount).expect("Must have enough bonded.");
 
 		// update the ledger.
@@ -97,6 +109,11 @@ decl_tx! {
 		Ok(())
 	}
 
+	// NOTE: if we allow read from state then the bonded key of old ctrl also.
+	#[access = (|origin: Public| vec![
+		<Ledger<R>>::key_for(origin.clone()),
+		<Bonded<R>>::key_for(ctrl.clone()),
+	])]
 	fn tx_set_controller(rt, stash, ctrl: AccountId) {
 		let mut ledger = Ledger::read(rt, stash).or_forward()?;
 
@@ -122,6 +139,10 @@ decl_tx! {
 
 	}
 
+	// NOTE: if we allow storage read then we can also add ledger of stash
+	#[access = (|origin: Public| vec![
+		<Bonded<R>>::key_for(origin),
+	])]
 	fn tx_validate(rt, ctrl) {
 		let stash = Bonded::read(rt, ctrl).or_forward()?;
 		if stash == Default::default() {
@@ -140,6 +161,10 @@ decl_tx! {
 		Ok(())
 	}
 
+	// NOTE: if we allow storage read then we can also add ledger of stash
+	#[access = (|origin: Public| vec![
+		<Bonded<R>>::key_for(origin),
+	])]
 	fn tx_nominate(rt, ctrl, targets: Vec<AccountId>) {
 		let stash = Bonded::read(rt, ctrl).or_forward()?;
 		if stash == Default::default() {
@@ -161,6 +186,10 @@ decl_tx! {
 		Ok(())
 	}
 
+	// NOTE: if we allow storage read then we can also add ledger of stash
+	#[access = (|origin: Public| vec![
+		<Bonded<R>>::key_for(origin),
+	])]
 	fn tx_chill(rt, ctrl) {
 		let stash = Bonded::read(rt, ctrl).or_forward()?;
 		if stash == Default::default() {

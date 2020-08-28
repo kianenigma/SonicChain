@@ -223,7 +223,7 @@ pub mod node {
 			let transaction_nodes = txs
 				.iter()
 				.map(|tx| {
-					let keys = runtime.validate(&tx.function, tx.signature.0).unwrap();
+					let keys = runtime.validate(&tx.function, tx.signature.0);
 					let tx_node = Node::new_tx(tx.id, Default::default()).as_rc();
 
 					let keys = keys

@@ -37,8 +37,11 @@ name = "benchmarks"
 version = "0.1.0"
 dependencies = [
  "executor",
+ "log",
  "logging",
+ "parity-scale-codec",
  "primitives",
+ "rand",
  "runtime",
  "state",
 ]

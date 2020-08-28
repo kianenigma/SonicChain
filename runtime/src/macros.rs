@@ -40,28 +40,7 @@ macro_rules! decl_outer_call {
 
 #[macro_export]
 macro_rules! decl_tx {
-	// fill default #[access]
-	(
-		$(
-			fn $name:ident(
-				$runtime:ident,
-				$origin:ident
-				$(, $arg_name:ident : $arg_type:ty)* $(,)?
-			) { $( $impl:tt )* }
-		)*
-	) => {
-		$crate::decl_tx!(
-			$(
-				#[access = (|_| { Default::default() })]
-				fn $name(
-					$runtime,
-					$origin
-					$(, $arg_name: $arg_type)*
-				) { $( $impl )* }
-			)*
-		);
-	};
-
+	// TODO: fill default.
 	// entry arm
 	(
 		$(
@@ -169,12 +148,21 @@ macro_rules! decl_tx {
 					}
 				}
 
-				// TODO: validation result seem to NOT need to be a result after all.
 				#[allow(unused)]
+				#[cfg(not(feature = "no-access"))]
 				fn validate(&self, _: &R, origin: AccountId) -> $crate::ValidationResult {
 					match self {
 						$(
-							Self::[<$name:camel>]( $($arg_name),* ) => Ok($access(origin)),
+							Self::[<$name:camel>]( $($arg_name),* ) => $access(origin),
+						)*
+					}
+				}
+				#[allow(unused)]
+				#[cfg(feature = "no-access")]
+				fn validate(&self, _: &R, origin: AccountId) -> $crate::ValidationResult {
+					match self {
+						$(
+							Self::[<$name:camel>]( $($arg_name),* ) => Default::default(),
 						)*
 					}
 				}

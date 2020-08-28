@@ -117,7 +117,7 @@ impl<T> UnwrapStorageOp<T> for Result<T, primitives::ThreadId> {
 }
 
 /// The result of the validation of a dispatchable.
-pub type ValidationResult = Result<Vec<primitives::Key>, ()>;
+pub type ValidationResult = Vec<primitives::Key>;
 
 /// Anything that can be dispatched.
 ///
@@ -383,7 +383,7 @@ mod concurrent_runtime_test {
 			assert!(runtime
 				.dispatch(tx.clone(), testing::random().public())
 				.is_ok());
-			assert!(runtime.validate(&tx, testing::random().public()).is_ok());
+			assert!(!runtime.validate(&tx, testing::random().public()).is_empty());
 		});
 
 		let state_ptr = Arc::clone(&state);
@@ -394,7 +394,7 @@ mod concurrent_runtime_test {
 			assert!(runtime
 				.dispatch(tx.clone(), testing::random().public())
 				.is_ok());
-			assert!(runtime.validate(&tx, testing::random().public()).is_ok());
+			assert!(!runtime.validate(&tx, testing::random().public()).is_empty());
 		});
 	}
 
