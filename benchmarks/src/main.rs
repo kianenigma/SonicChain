@@ -2,7 +2,6 @@ use executor::{concurrent::*, types::*, *};
 use primitives::*;
 use runtime::*;
 
-// FIXME: means of annotating stuff.
 // FIXME: Timings are not really accurate yet.
 // FIXME: dataset: world of stakers
 // TODO: flaky predictions?

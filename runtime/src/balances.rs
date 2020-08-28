@@ -1,7 +1,4 @@
-use crate::{
-	decl_storage_map, decl_tx, DispatchError, DispatchResult, Dispatchable, ModuleRuntime,
-	UnwrapStorageOp, ValidationResult,
-};
+use crate::{decl_storage_map, decl_tx, DispatchError, UnwrapStorageOp};
 use parity_scale_codec::{Decode, Encode};
 use primitives::*;
 
@@ -82,31 +79,9 @@ decl_storage_map!(
 	AccountBalance
 );
 
-/// The call of the balances module.
-#[derive(Debug, Clone, Eq, PartialEq, Encode, Decode)]
-pub enum Call {
-	Transfer(AccountId, Balance),
-}
-
-impl<R: ModuleRuntime> Dispatchable<R> for Call {
-	fn dispatch<T>(self, runtime: &R, origin: AccountId) -> DispatchResult {
-		match self {
-			Self::Transfer(to, value) => tx_transfer(runtime, origin, to, value),
-		}
-	}
-
-	fn validate(&self, _: &R, origin: AccountId) -> ValidationResult {
-		match *self {
-			Self::Transfer(to, _) => Ok(vec![
-				<BalanceOf<R>>::key_for(origin),
-				<BalanceOf<R>>::key_for(to),
-			]),
-		}
-	}
-}
-
 decl_tx! {
-	fn tx_transfer(
+	#[access = (|origin| { vec![<BalanceOf<R>>::key_for(origin), <BalanceOf<R>>::key_for(dest.clone())] })]
+	fn transfer(
 		runtime,
 		origin,
 		dest: AccountId,
@@ -201,7 +176,7 @@ macro_rules! test_with_rt {
 				);
 
 				assert_eq!(
-					tx_transfer(&runtime, alice, bob, 334).unwrap_err(),
+					transfer(&runtime, alice, bob, 334).unwrap_err(),
 					DispatchError::LogicError("Does not have enough funds.")
 				);
 			}

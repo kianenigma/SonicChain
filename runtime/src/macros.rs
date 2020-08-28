@@ -40,15 +40,83 @@ macro_rules! decl_outer_call {
 
 #[macro_export]
 macro_rules! decl_tx {
+	// fill default #[access]
 	(
 		$(
 			fn $name:ident(
 				$runtime:ident,
 				$origin:ident
-				$(, $arg_name:ident : $arg_value:ty)* $(,)?
-			) {  $( $impl:tt )* }
+				$(, $arg_name:ident : $arg_type:ty)* $(,)?
+			) { $( $impl:tt )* }
 		)*
+	) => {
+		$crate::decl_tx!(
+			$(
+				#[access = (|_| { Default::default() })]
+				fn $name(
+					$runtime,
+					$origin
+					$(, $arg_name: $arg_type)*
+				) { $( $impl )* }
+			)*
+		);
+	};
 
+	// entry arm
+	(
+		$(
+			#[access = $access:tt]
+			fn $name:ident(
+				$runtime:ident,
+				$origin:ident
+				$(, $arg_name:ident : $arg_type:ty)* $(,)?
+			) { $( $impl:tt )* }
+		)*
+	) => {
+		// expand fn
+		$crate::decl_tx!(
+			@DECL_FUNCTION
+			$(
+				fn $name(
+					$runtime,
+					$origin
+					$(, $arg_name : $arg_type)*
+				) {  $( $impl )* }
+			)*
+		);
+
+		// expand call enum
+		$crate::decl_tx!(
+			@DECL_CALL_ENUM
+			$(
+				fn $name(
+					$(, $arg_name : $arg_type)*
+				)
+			)*
+		);
+
+		// implement dispatchable.
+		$crate::decl_tx!(
+			@IMPL_DISPATCHABLE
+			$(
+				#[access = $access]
+				fn $name(
+					$(, $arg_name : $arg_type)*
+				)
+			)*
+		);
+	};
+
+	// arm1: decl_function.
+	(
+		@DECL_FUNCTION
+		$(
+			fn $name:ident(
+				$runtime:ident,
+				$origin:ident
+				$(, $arg_name:ident : $arg_type:ty)* $(,)?
+			) { $( $impl:tt )* }
+		)*
 	) => {
 		$(
 			fn $name<
@@ -56,12 +124,63 @@ macro_rules! decl_tx {
 			>(
 				$runtime: &R,
 				$origin: $crate::AccountId
-				$(, $arg_name: $arg_value)*
+				$(, $arg_name: $arg_type)*
 			) -> $crate::DispatchResult {
 				$( $impl )*
 			}
 		)*
 	};
+
+	// arm2: decl call enum.
+	(
+		@DECL_CALL_ENUM
+		$(
+			fn $name:ident(
+				$(, $arg_name:ident : $arg_type:ty)* $(,)?
+			)
+		)*
+	) => {
+		$crate::paste! {
+			/// The call of the this module.
+			#[derive(Debug, Clone, Eq, PartialEq, Encode, Decode)]
+			pub enum Call {
+				$( [<$name:camel>]( $($arg_type),*) ),*
+			}
+		}
+	};
+
+	// arm3: impl dispatchable trait.
+	(
+		@IMPL_DISPATCHABLE
+		$(
+			#[access = $access:tt]
+			fn $name:ident(
+				$(, $arg_name:ident : $arg_type:ty)* $(,)?
+			)
+		)*
+	) => {
+		$crate::paste! {
+			impl<R: $crate::ModuleRuntime> $crate::Dispatchable<R> for Call {
+				fn dispatch<T>(self, runtime: &R, origin: $crate::AccountId) -> $crate::DispatchResult {
+					match self {
+						$(
+							Self::[<$name:camel>]( $($arg_name),* ) => $name(runtime, origin, $($arg_name),*)
+						),*
+					}
+				}
+
+				// TODO: validation result seem to NOT need to be a result after all.
+				#[allow(unused)]
+				fn validate(&self, _: &R, origin: AccountId) -> $crate::ValidationResult {
+					match self {
+						$(
+							Self::[<$name:camel>]( $($arg_name),* ) => Ok($access(origin)),
+						)*
+					}
+				}
+			}
+		}
+	}
 }
 
 /// Create a storage map struct.

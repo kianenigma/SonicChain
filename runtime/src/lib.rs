@@ -9,6 +9,10 @@ mod macros;
 pub mod staking;
 pub mod state_generator;
 
+// re-export paste for macros.
+#[doc(hidden)]
+pub use paste::paste;
+
 // re-exports.
 pub use primitives;
 

@@ -1,7 +1,4 @@
-use crate::{
-	balances::BalanceOf, decl_storage_map, decl_tx, DispatchError, DispatchResult, Dispatchable,
-	ModuleRuntime, UnwrapStorageOp, ValidationResult,
-};
+use crate::{balances::BalanceOf, decl_storage_map, decl_tx, DispatchError, UnwrapStorageOp};
 use parity_scale_codec::{Decode, Encode};
 use primitives::*;
 
@@ -37,42 +34,6 @@ decl_storage_map!(Ledger, "ledger_of", AccountId, StakingLedger);
 decl_storage_map!(Bonded, "bonded", AccountId, AccountId);
 // A mapping from stash to nominations.
 decl_storage_map!(Nominations, "nominations", AccountId, Vec<AccountId>);
-
-#[derive(Debug, Clone, Eq, PartialEq, Encode, Decode)]
-pub enum Call {
-	/// Bond some funds.
-	Bond(Balance, AccountId),
-	/// Bond more funds.
-	BondExtra(Balance),
-	/// Unbond some funds.
-	Unbond(Balance),
-	/// Change the controller
-	SetController(AccountId),
-	/// Set intention to validate.
-	Validate,
-	/// Set intention to nominate.
-	Nominate(Vec<AccountId>),
-	/// Set intention to do nothing anymore.
-	Chill,
-}
-
-impl<R: ModuleRuntime> Dispatchable<R> for Call {
-	fn dispatch<T>(self, runtime: &R, origin: AccountId) -> DispatchResult {
-		match self {
-			Call::Bond(amount, ctrl) => tx_bond(runtime, origin, amount, ctrl.clone()),
-			Call::BondExtra(amount) => tx_bond_extra(runtime, origin, amount),
-			Call::Unbond(amount) => tx_unbond(runtime, origin, amount),
-			Call::SetController(ctrl) => tx_set_controller(runtime, origin, ctrl.clone()),
-			Call::Validate => tx_validate(runtime, origin),
-			Call::Nominate(targets) => tx_nominate(runtime, origin, targets.clone()),
-			Call::Chill => tx_chill(runtime, origin),
-		}
-	}
-
-	fn validate(&self, _: &R, _: AccountId) -> ValidationResult {
-		Ok(Default::default())
-	}
-}
 
 decl_tx! {
 	fn tx_bond(rt, stash, amount: Balance, controller: AccountId) {
