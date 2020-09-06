@@ -40,17 +40,67 @@ macro_rules! decl_outer_call {
 
 #[macro_export]
 macro_rules! decl_tx {
-	// TODO: fill default.
+	// parse a complete transaction.
+	(
+		@PARSED [ $($parsed_functions:tt)* ]
+		#[access = $access:tt]
+		fn $name:ident(
+			$runtime:ident,
+			$origin:ident
+			$(, $arg_name:ident : $arg_type:ty)* $(,)?
+		) { $( $impl:tt )* }
+		$( $rest:tt )*
+	) => {
+		$crate::decl_tx! {
+			@PARSED [
+				$( $parsed_functions )*
+				#[access = $access]
+				fn $name(
+					$runtime,
+					$origin
+					$(, $arg_name : $arg_type)*
+				) {  $( $impl )* }
+			]
+			$( $rest )*
+		}
+	};
+
+	// parse a transaction without access.
+	(
+		@PARSED [ $($parsed_functions:tt)* ]
+		fn $name:ident(
+			$runtime:ident,
+			$origin:ident
+			$(, $arg_name:ident : $arg_type:ty)* $(,)?
+		) { $( $impl:tt )* }
+		$( $rest:tt )*
+	) => {
+		$crate::decl_tx! {
+			@PARSED [
+				$( $parsed_functions )*
+				#[access = (|_| Default::default())]
+				fn $name(
+					$runtime,
+					$origin
+					$(, $arg_name : $arg_type)*
+				) {  $( $impl )* }
+			]
+			$( $rest )*
+		}
+	};
+
 	// entry arm
 	(
-		$(
-			#[access = $access:tt]
-			fn $name:ident(
-				$runtime:ident,
-				$origin:ident
-				$(, $arg_name:ident : $arg_type:ty)* $(,)?
-			) { $( $impl:tt )* }
-		)*
+		@PARSED [
+			$(
+				#[access = $access:tt]
+				fn $name:ident(
+					$runtime:ident,
+					$origin:ident
+					$(, $arg_name:ident : $arg_type:ty)* $(,)?
+				) { $( $impl:tt )* }
+			)*
+		]
 	) => {
 		// expand fn
 		$crate::decl_tx!(
@@ -168,7 +218,14 @@ macro_rules! decl_tx {
 				}
 			}
 		}
-	}
+	};
+
+	( $( $functions:tt )* ) => {
+		$crate::decl_tx! {
+			@PARSED []
+			$( $functions )*
+		}
+	};
 }
 
 /// Create a storage map struct.

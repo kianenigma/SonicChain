@@ -140,9 +140,6 @@ decl_tx! {
 	}
 
 	// NOTE: if we allow storage read then we can also add ledger of stash
-	#[access = (|origin: Public| vec![
-		<Bonded<R>>::key_for(origin),
-	])]
 	fn tx_validate(rt, ctrl) {
 		let stash = Bonded::read(rt, ctrl).or_forward()?;
 		if stash == Default::default() {
