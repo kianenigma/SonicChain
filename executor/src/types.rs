@@ -1,9 +1,11 @@
 use parity_scale_codec::Encode;
 use primitives::{ThreadId, TransactionId};
 use runtime::OuterCall;
-use std::collections::BTreeMap;
-use std::fmt::{self, Debug, Formatter};
-use std::sync::mpsc::Sender;
+use std::{
+	collections::BTreeMap,
+	fmt::{self, Debug, Formatter},
+	sync::mpsc::Sender,
+};
 
 #[derive(Debug, Eq, PartialEq)]
 /// A block of transaction.
@@ -22,7 +24,7 @@ impl From<Vec<Transaction>> for Block {
 ///
 /// This is used to annotate the final status of a transaction.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum TransactionStatus {
+pub enum ExecutionTag {
 	/// Done by the given thread.
 	Done(ThreadId),
 	/// Ended up being an orphan.
@@ -31,9 +33,9 @@ pub enum TransactionStatus {
 	NotExecuted,
 }
 
-impl Default for TransactionStatus {
+impl Default for ExecutionTag {
 	fn default() -> Self {
-		TransactionStatus::NotExecuted
+		ExecutionTag::NotExecuted
 	}
 }
 
@@ -59,10 +61,11 @@ pub struct Transaction {
 	///
 	/// This must be strictly unique.
 	pub id: TransactionId,
-	/// Status of the transaction.
+	/// Tag of the transaction.
 	///
-	/// This should be set at the every end, once the transaction is executed.
-	pub status: TransactionStatus,
+	/// This should be set at the every end, once the transaction is executed. This information is
+	/// critical for block building.
+	pub tag: ExecutionTag,
 	/// Execution status.
 	pub exec_status: ExecutionStatus,
 	/// The function of the transaction. This should be executed by a runtime.
@@ -73,11 +76,11 @@ pub struct Transaction {
 
 impl Transaction {
 	pub fn set_done(&mut self, by_whom: ThreadId) {
-		self.status = TransactionStatus::Done(by_whom);
+		self.tag = ExecutionTag::Done(by_whom);
 	}
 
 	pub fn set_orphan(&mut self) {
-		self.status = TransactionStatus::Orphan;
+		self.tag = ExecutionTag::Orphan;
 	}
 }
 
@@ -101,7 +104,7 @@ impl Debug for Transaction {
 	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
 		f.debug_struct("Transaction")
 			.field("id", &self.id)
-			.field("status", &self.status)
+			.field("status", &self.tag)
 			.field("exec_status", &self.exec_status)
 			.finish_non_exhaustive()
 	}
@@ -117,7 +120,7 @@ impl Transaction {
 		Self {
 			id,
 			function: call,
-			status: TransactionStatus::NotExecuted,
+			tag: ExecutionTag::NotExecuted,
 			exec_status: ExecutionStatus::Initial,
 			signature: (origin, signed_call),
 		}
@@ -234,8 +237,7 @@ impl Eq for MessagePayload {}
 
 pub mod transaction_generator {
 	use super::*;
-	use primitives::testing::*;
-	use primitives::*;
+	use primitives::{testing::*, *};
 	use runtime::balances::BalanceOf;
 
 	/// Build a transfer from `origin` to `to`.

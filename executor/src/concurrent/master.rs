@@ -1,7 +1,7 @@
 use crate::{
 	concurrent::tx_distribution::Distributer,
 	pool::*,
-	types::{Message, MessagePayload, TaskType, TransactionStatus},
+	types::{ExecutionTag, Message, MessagePayload, TaskType},
 	Block, State, Transaction,
 };
 use logging::log;
@@ -119,9 +119,9 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 		let mut buckets: BTreeMap<ThreadId, Vec<Transaction>> = Default::default();
 		let mut orphans: Vec<Transaction> = Default::default();
 		for tx in block.transactions {
-			match tx.status {
-				TransactionStatus::Done(whom) => buckets.entry(whom).or_default().push(tx.clone()),
-				TransactionStatus::Orphan => orphans.push(tx.clone()),
+			match tx.tag {
+				ExecutionTag::Done(whom) => buckets.entry(whom).or_default().push(tx.clone()),
+				ExecutionTag::Orphan => orphans.push(tx.clone()),
 				_ => panic!("Unexpected tx status."),
 			}
 		}
@@ -163,8 +163,8 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 			.expect("Broadcast should work");
 
 		for tx in block.transactions {
-			match tx.status {
-				TransactionStatus::Done(owner) => {
+			match tx.tag {
+				ExecutionTag::Done(owner) => {
 					self.workers
 						.get(&owner)
 						.expect("Worker should exist")
@@ -172,7 +172,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 						.send(MessagePayload::Transaction(tx).into())
 						.expect("Send should work");
 				}
-				TransactionStatus::Orphan => {
+				ExecutionTag::Orphan => {
 					self.orphan_pool.push(tx);
 				}
 				_ => panic!("Transaction for validation need to be executed or orphan"),
@@ -254,7 +254,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 							.tx_pool
 							.remove(|t| t.id == tid)
 							.expect("Transaction must exist in the pool");
-						orphan.status = TransactionStatus::Orphan;
+						orphan.tag = ExecutionTag::Orphan;
 						self.orphan_pool.push(orphan);
 					}
 					MessagePayload::WorkerExecuted(tid) => {
@@ -266,10 +266,10 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 						log!(debug, "Updating owner of {:?} to {:?}", t, worker);
 						// initially, the transaction must have been marked with Done(_) of some
 						// other thread, and now we update it.
-						match t.status {
-							TransactionStatus::Done(initial_worker) => {
+						match t.tag {
+							ExecutionTag::Done(initial_worker) => {
 								assert_ne!(worker, initial_worker);
-								t.status = TransactionStatus::Done(worker);
+								t.tag = ExecutionTag::Done(worker);
 								executed_local += 1;
 							}
 							_ => panic!("Unexpected initial worker."),
@@ -314,8 +314,8 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 			.tx_pool
 			.all()
 			.iter()
-			.map(|tx| match tx.status {
-				TransactionStatus::Done(w) => (w, tx.clone()),
+			.map(|tx| match tx.tag {
+				ExecutionTag::Done(w) => (w, tx.clone()),
 				_ => panic!(
 					"A transaction has not been assigned. This is a bug in the distribution code"
 				),
@@ -347,7 +347,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 			self.orphan_pool.len()
 		);
 		for tx in self.orphan_pool.iter_mut() {
-			debug_assert_eq!(tx.status, TransactionStatus::Orphan);
+			debug_assert_eq!(tx.tag, ExecutionTag::Orphan);
 			let origin = tx.signature.0;
 			log!(trace, "Executing orphan tx: {:?}", tx);
 			let _outcome = self
@@ -573,7 +573,7 @@ mod master_tests_multi_worker {
 		transaction_generator::endow_account(testing::alice().public(), &master.runtime, 5);
 		transactions
 			.iter_mut()
-			.for_each(|t| t.status = TransactionStatus::Orphan);
+			.for_each(|t| t.tag = ExecutionTag::Orphan);
 
 		master.orphan_pool.extend(transactions);
 		master.execute_orphan_pool();

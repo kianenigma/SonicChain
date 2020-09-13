@@ -1,6 +1,6 @@
 use crate::{
 	pool::TransactionPool,
-	types::{Transaction, TransactionStatus},
+	types::{ExecutionTag, Transaction},
 };
 use primitives::*;
 use runtime::SequentialRuntime;
@@ -318,13 +318,12 @@ pub mod node {
 						})
 						.for_each(|tid| {
 							let (_, tx) = txs.get_mut(|t| t.id == tid).unwrap();
-							tx.status = TransactionStatus::Done(worker);
+							tx.tag = ExecutionTag::Done(worker);
 						})
 				});
 
 			debug_assert!(
-				txs.iter()
-					.all(|tx| matches!(tx.status, TransactionStatus::Done(_))),
+				txs.iter().all(|tx| matches!(tx.tag, ExecutionTag::Done(_))),
 				"All transactions inside the pool must have a Done(_) status.",
 			)
 		}
@@ -363,7 +362,7 @@ impl Distributer for RoundRobin {
 
 		pool.iter_mut().enumerate().for_each(|(idx, tx)| {
 			let assigned_worker = worker_ids[idx % num_workers];
-			tx.status = TransactionStatus::Done(assigned_worker);
+			tx.tag = ExecutionTag::Done(assigned_worker);
 		});
 	}
 }
@@ -373,7 +372,7 @@ mod tests {
 	use super::*;
 	use crate::{
 		pool::VecPool,
-		types::{Transaction, TransactionStatus},
+		types::{ExecutionTag, Transaction},
 	};
 	use primitives::testing;
 
@@ -393,24 +392,24 @@ mod tests {
 			pool.get(|t| t.signature.0 == testing::alice().public())
 				.unwrap()
 				.1
-				.status,
-			TransactionStatus::Done(1)
+				.tag,
+			ExecutionTag::Done(1)
 		);
 
 		assert_eq!(
 			pool.get(|t| t.signature.0 == testing::bob().public())
 				.unwrap()
 				.1
-				.status,
-			TransactionStatus::Done(2)
+				.tag,
+			ExecutionTag::Done(2)
 		);
 
 		assert_eq!(
 			pool.get(|t| t.signature.0 == testing::dave().public())
 				.unwrap()
 				.1
-				.status,
-			TransactionStatus::Done(1)
+				.tag,
+			ExecutionTag::Done(1)
 		);
 	}
 }

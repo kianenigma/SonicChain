@@ -1,5 +1,5 @@
 use crate::{
-	types::{ExecutionStatus, Message, MessagePayload, TaskType, Transaction, TransactionStatus},
+	types::{ExecutionStatus, ExecutionTag, Message, MessagePayload, TaskType, Transaction},
 	State,
 };
 use logging::log;
@@ -144,12 +144,12 @@ impl Worker {
 						let Transaction {
 							function,
 							signature,
-							status,
+							tag,
 							..
 						} = tx;
 						// transaction must be marked for me.
 						debug_assert!(
-							std::matches!(status, TransactionStatus::Done(who) if who == self.id)
+							std::matches!(tag, ExecutionTag::Done(who) if who == self.id)
 						);
 						let origin = signature.0;
 						// we know that this transaction will not conflict with anyone else.
@@ -302,37 +302,6 @@ impl Worker {
 				ExecutionOutcome::Executed(ok)
 			}
 		};
-		// let final_outcome = match rt_dispatch_result {
-		// 	Err(err) => {
-		// 		match (err, exec_status) {
-		// 			(DispatchError::Tainted(owner, corrupt), ExecutionStatus::Initial) => {
-		// 				if corrupt {
-		// 					forward_to_master(tid)
-		// 				} else {
-		// 					forward_to_worker(tx.clone(), owner)
-		// 				}
-		// 			}
-		// 			(DispatchError::Tainted(_, _), ExecutionStatus::Forwarded) => {
-		// 				forward_to_master(tx.id)
-		// 			}
-		// 			(DispatchError::LogicError(why), ExecutionStatus::Initial) => {
-		// 				// logical error and initial, all good, do nothing.
-		// 				ExecutionOutcome::Executed(Err(DispatchError::LogicError(why)))
-		// 			}
-		// 			(DispatchError::LogicError(why), ExecutionStatus::Forwarded) => {
-		// 				// it was an error and it was forwarded. Report to master.
-		// 				report_execution(tid);
-		// 				ExecutionOutcome::Executed(Err(DispatchError::LogicError(why)))
-		// 			}
-		// 		}
-		// 	}
-		// 	Ok(_) => {
-		// 		if exec_status == ExecutionStatus::Forwarded {
-		// 			report_execution(tid)
-		// 		}
-		// 		ExecutionOutcome::Executed(Ok(()))
-		// 	}
-		// };
 
 		log!(trace, "execute or forward {:?} => {:?}", tx, final_outcome);
 		final_outcome

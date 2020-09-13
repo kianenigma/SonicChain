@@ -164,8 +164,8 @@ pub mod datasets {
 
 fn sequential() {
 	let mut executor = sequential::SequentialExecutor::new();
-	// let dataset = datasets::millionaires_playground(&executor.runtime, 10_000, 5_000);
-	let dataset = datasets::world_of_stakers(&executor.runtime, 200, 1_000, 5_000);
+	let dataset = datasets::millionaires_playground(&executor.runtime, 10_000, 5_000);
+	// let dataset = datasets::world_of_stakers(&executor.runtime, 200, 1_000, 5_000);
 
 	let start = std::time::Instant::now();
 	executor.author_block(dataset);
@@ -174,8 +174,8 @@ fn sequential() {
 
 fn concurrent<D: tx_distribution::Distributer>() {
 	let mut executor = concurrent::ConcurrentExecutor::<Pool, D>::new(4, false, None);
-	// let dataset = datasets::millionaires_playground(&executor.master.runtime, 10_000, 5_000);
-	let dataset = datasets::world_of_stakers(&executor.master.runtime, 200, 1_000, 5_000);
+	let dataset = datasets::millionaires_playground(&executor.master.runtime, 10_000, 5_000);
+	// let dataset = datasets::world_of_stakers(&executor.master.runtime, 200, 1_000, 5_000);
 
 	let start = std::time::Instant::now();
 	executor.author_block(dataset);
