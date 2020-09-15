@@ -1,0 +1,14 @@
+[package]
+name = "count-of"
+version = "0.1.0"
+authors = ["kianenigma <kian.peymani@gmail.com>"]
+edition = "2018"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "1.0.40"
+Inflector = "0.11.4"
+quote = "1.0.7"
+proc-macro2 = "1.0.21"

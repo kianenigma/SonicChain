@@ -4,6 +4,7 @@ members = [
 	"state",
 	"primitives",
 	"runtime",
+	"runtime/count-of",
 	"executor",
 	"logging",
 	"benchmarks",
