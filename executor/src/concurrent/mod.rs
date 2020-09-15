@@ -189,7 +189,7 @@ mod concurrent_executor {
 	fn validation_authoring_works_bank() {
 		logging::init_logger();
 		let mut executor = ConcurrentExecutor::<Pool, RoundRobin>::new(3, false, None);
-		let (transactions, accounts) = transaction_generator::bank(5, 20);
+		let (transactions, accounts) = transaction_generator::bank(50, 100);
 
 		let initial_state = InitialStateGenerate::new()
 			.with_runtime(|rt| {

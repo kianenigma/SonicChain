@@ -4,7 +4,6 @@
 pub mod concurrent;
 pub mod pool;
 pub mod sequential;
-mod test;
 pub mod types;
 
 use logging::log;
@@ -46,19 +45,21 @@ pub trait Executor {
 	) -> bool {
 		if let Some(state) = initial_state.clone() {
 			log!(
-				info,
+				debug,
 				"Applying an initial state with {} keys for authoring.",
 				state.len()
 			);
 			self.apply_state(state)
 		}
+		let start = std::time::Instant::now();
 		let (authoring_state, block) = self.author_block(initial_transactions);
+		log!(warn, "authoring took {:?}", start.elapsed());
 		self.clean();
 
 		// apply the initial state again.
 		if let Some(state) = initial_state {
 			log!(
-				info,
+				debug,
 				"Applying an initial state with {} keys for validation.",
 				state.len()
 			);

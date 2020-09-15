@@ -4,7 +4,10 @@ use crate::{
 };
 use logging::log;
 use primitives::{ThreadId, TransactionId};
-use runtime::{ConcurrentRuntime, RuntimeDispatchError, RuntimeDispatchSuccess, SequentialRuntime};
+use runtime::{
+	ConcurrentRuntime, RuntimeDispatchError, RuntimeDispatchSuccess, RuntimeDispatchSuccessCount,
+	SequentialRuntime,
+};
 use std::{
 	collections::BTreeMap,
 	sync::{
@@ -105,13 +108,16 @@ impl Worker {
 	/// Once the task is done, the worker parks loops back to parking itself.
 	pub fn run(self) {
 		loop {
-			log!(info, "Going to park.");
+			log!(
+				debug,
+				"Worker thread task loop started. Going to park until task."
+			);
 			// park self.
 			thread::park();
 
 			// look for a task.
 			let Message { payload, from: _ } = self.from_master.recv().unwrap();
-			log!(debug, "Received task {:?}.", payload);
+			log!(info, "Received task {:?}.", payload);
 
 			match payload {
 				MessagePayload::Task(t) => match t {
@@ -127,6 +133,7 @@ impl Worker {
 	/// Run the worker thread logic in validating.
 	pub fn run_validate(&self) {
 		// deplete the queue.
+		let mut outcomes = vec![];
 		loop {
 			if let Ok(Message {
 				from: _from,
@@ -153,9 +160,10 @@ impl Worker {
 						);
 						let origin = signature.0;
 						// we know that this transaction will not conflict with anyone else.
-						self.sequential_runtime
+						let outcome = self.sequential_runtime
 							.dispatch(function, origin)
 							.expect("Executing transaction in the validation phase by thread should never fail");
+						outcomes.push(outcome);
 					}
 					MessagePayload::TransactionDistributionDone => {
 						break;
@@ -164,6 +172,15 @@ impl Worker {
 				}
 			}
 		}
+
+		log!(
+			info,
+			"Sending report {:?}. From {} executed, {} were ok and {} were logic error.",
+			MessagePayload::ValidationReport,
+			outcomes.len(),
+			outcomes.ok_count(),
+			outcomes.logic_error_count(),
+		);
 
 		// report back to master and done.
 		self.to_master
@@ -206,6 +223,7 @@ impl Worker {
 	fn deplete_master_queue(&self) {
 		let mut executed = 0;
 		let mut forwarded = 0;
+		let mut runtime_success_outputs = vec![];
 		loop {
 			let Message { payload, from } = self.from_master.recv().unwrap();
 			debug_assert_eq!(from, self.master_id);
@@ -214,7 +232,10 @@ impl Worker {
 				MessagePayload::Transaction(tx) => {
 					let outcome = self.execute_or_forward(tx.clone());
 					match outcome {
-						ExecutionOutcome::Executed(_) => executed += 1,
+						ExecutionOutcome::Executed(inner) => {
+							executed += 1;
+							runtime_success_outputs.push(inner);
+						}
 						ExecutionOutcome::Forwarded(_) | ExecutionOutcome::ForwardedToMaster => {
 							forwarded += 1
 						}
@@ -226,7 +247,14 @@ impl Worker {
 		}
 
 		let message = MessagePayload::AuthoringReport(executed, forwarded).into();
-		log!(info, "Sending report {:?}", message);
+		log!(
+			info,
+			"Sending report {:?}. From {} executed, {} were ok and {} were logic error.",
+			message,
+			executed,
+			runtime_success_outputs.ok_count(),
+			runtime_success_outputs.logic_error_count(),
+		);
 		self.to_master
 			.send(message)
 			.expect("Sending to master cannot fail; qed");
@@ -334,7 +362,6 @@ impl Worker {
 		while num_received != (num_workers - 1) {
 			let message = self.from_others.recv().unwrap();
 			let Message { payload, from } = message;
-			log!(debug, "Received {:?} from {:?}", payload, from);
 			assert!(matches!(payload, MessagePayload::Test(x) if x == vec![from as u8]));
 			num_received += 1;
 		}

@@ -280,7 +280,7 @@ pub mod node {
 					.unwrap();
 
 				logging::log!(
-					debug,
+					trace,
 					"assigning component with {} transactions to thread {}",
 					largest_component.len(),
 					k,
@@ -303,9 +303,14 @@ pub mod node {
 				"all transactions within the components must be assigned to a worker."
 			);
 
-			component_workers.iter().for_each(|(k, v)| {
-				logging::log!(info, "Assigning {} transactions to thread {}", v.len(), k);
-			});
+			logging::log!(
+				info,
+				"Assigning outcome = {:?}",
+				component_workers
+					.iter()
+					.map(|(k, v)| (k, v.len()))
+					.collect::<Vec<_>>()
+			);
 
 			component_workers
 				.into_iter()

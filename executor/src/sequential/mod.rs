@@ -22,14 +22,22 @@ impl SequentialExecutor {
 	}
 
 	fn apply_transaction(&self, transactions: Vec<Transaction>) {
+		let mut outcomes: Vec<RuntimeDispatchSuccess> = Vec::with_capacity(transactions.len());
 		for tx in transactions {
-			log!(debug, "applying transaction {:?}", tx);
 			let call = tx.function;
 			let origin = tx.signature.0;
 			let ok = self.runtime.dispatch(call, origin)
 				.expect("Sequential execution cannot fail on execute. This will at most be Ok(LogicError(..))");
-			log!(debug, "Result of last apply: {:?}", ok);
+			outcomes.push(ok);
 		}
+
+		log!(
+			info,
+			"Applied {} transactions, {} were ok {} were error.",
+			outcomes.len(),
+			outcomes.ok_count(),
+			outcomes.logic_error_count(),
+		);
 	}
 }
 

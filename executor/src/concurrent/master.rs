@@ -191,7 +191,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 			}) = self.from_workers.try_recv()
 			{
 				log!(
-					debug,
+					trace,
 					"message in collection phase of validating form {:?} => {:?}",
 					worker,
 					payload
@@ -208,7 +208,6 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 			}
 		}
 
-		log!(info, "All workers done. Moving on to orphans");
 		self.execute_orphan_pool();
 
 		self.state.dump()
@@ -238,7 +237,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 			}) = self.from_workers.try_recv()
 			{
 				log!(
-					debug,
+					trace,
 					"message in collection phase form {:?} => {:?}",
 					worker,
 					payload
@@ -263,7 +262,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 							.get_mut(|t| t.id == tid)
 							.expect("Transaction must exist in the pool");
 
-						log!(debug, "Updating owner of {:?} to {:?}", t, worker);
+						log!(trace, "Updating owner of {:?} to {:?}", t, worker);
 						// initially, the transaction must have been marked with Done(_) of some
 						// other thread, and now we update it.
 						match t.tag {
@@ -341,21 +340,29 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 	///
 	/// At this point, we are sure that no other thread is alive.
 	pub(crate) fn execute_orphan_pool(&mut self) {
+		use runtime::{RuntimeDispatchSuccess, RuntimeDispatchSuccessCount};
 		log!(
 			info,
 			"Starting orphan phase with {} transactions.",
 			self.orphan_pool.len()
 		);
+		let mut outcomes: Vec<RuntimeDispatchSuccess> = Vec::with_capacity(self.orphan_pool.len());
 		for tx in self.orphan_pool.iter_mut() {
 			debug_assert_eq!(tx.tag, ExecutionTag::Orphan);
 			let origin = tx.signature.0;
-			log!(trace, "Executing orphan tx: {:?}", tx);
 			let _outcome = self
 				.runtime
 				.dispatch(tx.function.clone(), origin)
 				.expect("Executing transaction in the master runtime should never fail; qed");
-			log!(trace, "outcome = {:?}", _outcome,);
+			outcomes.push(_outcome);
 		}
+
+		log!(
+			info,
+			"Orphan pool execution outcome: {} ok, {} logical error.",
+			outcomes.ok_count(),
+			outcomes.logic_error_count()
+		);
 	}
 
 	/// For now, round robin distribution.

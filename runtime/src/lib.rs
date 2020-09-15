@@ -48,7 +48,8 @@ pub enum DispatchError {
 	LogicError(&'static str),
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+use count_of::CountOf;
+#[derive(Debug, Eq, PartialEq, Clone, Copy, CountOf)]
 pub enum RuntimeDispatchSuccess {
 	/// Execution went fine.
 	Ok,
@@ -198,7 +199,7 @@ impl ConcurrentRuntime {
 		// the cache must always be empty at the beginning of a dispatch.
 		debug_assert_eq!(self.cache.borrow().keys().len(), 0);
 
-		log!(trace, "worker runtime executing {:?}. ", call);
+		log!(trace, "ConcurrentRuntime executing {:?}. ", call);
 		// execute
 		let dispatch_result =
 			<OuterCall as Dispatchable<Self>>::dispatch::<Self>(call, self, origin);
