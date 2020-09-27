@@ -10,6 +10,7 @@ use logging::log;
 use pool::VecPool;
 use runtime::StateMap;
 use state::StateEq;
+use std::time::Duration;
 use types::{Block, Transaction};
 
 const LOG_TARGET: &'static str = "exec";
@@ -24,10 +25,13 @@ pub trait Executor {
 	/// Execute the given block.
 	///
 	/// The output is the final state after the execution.
-	fn author_block(&mut self, initial_transactions: Vec<Transaction>) -> (StateMap, Block);
+	fn author_block(
+		&mut self,
+		initial_transactions: Vec<Transaction>,
+	) -> (StateMap, Block, Duration);
 
 	/// Re-validate a block as it will be done by the validator.
-	fn validate_block(&mut self, block: Block) -> StateMap;
+	fn validate_block(&mut self, block: Block) -> (StateMap, Duration);
 
 	/// Clean the internal state of the executor, whatever it may be.
 	fn clean(&mut self);
@@ -38,11 +42,13 @@ pub trait Executor {
 	///
 	/// Most often used for testing, otherwise you'd probably want to do one and then time the
 	/// execution separately.
+	///
+	/// Returns the time of validation and authoring respectively as well.
 	fn author_and_validate(
 		&mut self,
 		initial_transactions: Vec<Transaction>,
 		initial_state: Option<StateMap>,
-	) -> bool {
+	) -> (bool, Duration, Duration) {
 		if let Some(state) = initial_state.clone() {
 			log!(
 				debug,
@@ -51,9 +57,8 @@ pub trait Executor {
 			);
 			self.apply_state(state)
 		}
-		let start = std::time::Instant::now();
-		let (authoring_state, block) = self.author_block(initial_transactions);
-		log!(warn, "authoring took {:?}", start.elapsed());
+		let (authoring_state, block, authoring_time) = self.author_block(initial_transactions);
+		log!(warn, "⏳ authoring took {:?}", authoring_time);
 		self.clean();
 
 		// apply the initial state again.
@@ -65,7 +70,13 @@ pub trait Executor {
 			);
 			self.apply_state(state)
 		}
-		let validation_state = self.validate_block(block);
-		validation_state.state_eq(authoring_state)
+		let (validation_state, validation_time) = self.validate_block(block);
+		self.clean();
+		log!(warn, "⏳ validation took {:?}", validation_time);
+		(
+			validation_state.state_eq(authoring_state),
+			authoring_time,
+			validation_time,
+		)
 	}
 }

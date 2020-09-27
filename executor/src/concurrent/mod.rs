@@ -8,6 +8,7 @@ use std::{
 		mpsc::{channel, Sender},
 		Arc,
 	},
+	time::{Duration, Instant},
 };
 
 use crate::{pool::*, types::*, Executor, State, StateMap};
@@ -16,6 +17,8 @@ use primitives::*;
 use std::thread;
 use tx_distribution::*;
 use worker::*;
+
+const LOG_TARGET: &'static str = "concurrent-exec";
 
 /// A concurrent executor.
 #[derive(Debug)]
@@ -84,7 +87,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> ConcurrentExecutor<P, D> {
 		}
 
 		assert_eq!(to_workers.len(), threads);
-		log::info!("created {} worker threads.", threads);
+		logging::log!(info, "created {} worker threads.", threads);
 
 		master
 			.broadcast(MessagePayload::FinalizeSetup(to_workers.clone()).into())
@@ -95,18 +98,24 @@ impl<P: TransactionPool<Transaction>, D: Distributer> ConcurrentExecutor<P, D> {
 }
 
 impl<P: TransactionPool<Transaction>, D: Distributer> Executor for ConcurrentExecutor<P, D> {
-	fn author_block(&mut self, initial_transactions: Vec<Transaction>) -> (StateMap, Block) {
+	fn author_block(
+		&mut self,
+		initial_transactions: Vec<Transaction>,
+	) -> (StateMap, Block, Duration) {
+		logging::log!(
+			info,
+			"📕 Authoring block with {} transactions.",
+			initial_transactions.len(),
+		);
 		// Validate and all of the transactions to the pool.
 		self.master
 			.tx_pool
 			.push_batch(initial_transactions.as_ref());
 
 		// run.
+		let start = Instant::now();
 		self.master.unpark_all();
 		self.master.run_author();
-
-		// TODO: later on, we probably want to do this shit elsewhere so we can clearly time ONLY
-		// the execution, not this side-process.
 
 		// dump the state
 		let state = self.master.state.dump();
@@ -115,7 +124,7 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Executor for ConcurrentExe
 			.transactions
 			.extend(self.master.orphan_pool.iter().cloned());
 
-		(state, block)
+		(state, block, start.elapsed())
 	}
 
 	fn clean(&mut self) {
@@ -124,8 +133,14 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Executor for ConcurrentExe
 		self.master.orphan_pool.clear();
 	}
 
-	fn validate_block(&mut self, block: Block) -> StateMap {
-		self.master.validate_block(block)
+	fn validate_block(&mut self, block: Block) -> (StateMap, Duration) {
+		logging::log!(
+			info,
+			"✅ Validating block with {} transactions. ",
+			block.transactions.len(),
+		);
+		let start = Instant::now();
+		(self.master.validate_block(block), start.elapsed())
 	}
 
 	fn apply_state(&mut self, state: StateMap) {
@@ -179,7 +194,7 @@ mod concurrent_executor {
 		std::thread::sleep(std::time::Duration::from_millis(200));
 		assert_eq!(executor.master.workers.len(), 3);
 
-		assert!(executor.author_and_validate(vec![], None));
+		assert!(executor.author_and_validate(vec![], None).0);
 
 		executor.master.run_terminate();
 		assert!(executor.master.join_all().is_ok());
@@ -189,7 +204,7 @@ mod concurrent_executor {
 	fn validation_authoring_works_bank() {
 		logging::init_logger();
 		let mut executor = ConcurrentExecutor::<Pool, RoundRobin>::new(3, false, None);
-		let (transactions, accounts) = transaction_generator::bank(50, 100);
+		let (transactions, accounts) = transaction_generator::bank(50, 100, 100);
 
 		let initial_state = InitialStateGenerate::new()
 			.with_runtime(|rt| {
@@ -199,7 +214,11 @@ mod concurrent_executor {
 			})
 			.build();
 
-		assert!(executor.author_and_validate(transactions, Some(initial_state)));
+		assert!(
+			executor
+				.author_and_validate(transactions, Some(initial_state))
+				.0
+		);
 	}
 
 	#[test]
@@ -208,14 +227,14 @@ mod concurrent_executor {
 
 		let mut executor = ConcurrentExecutor::<Pool, RoundRobin>::new(3, false, None);
 
-		let (txs, accounts) = transaction_generator::bank(5, 20);
+		let (txs, accounts) = transaction_generator::bank(5, 20, 100);
 		accounts.iter().for_each(|acc| {
 			transaction_generator::endow_account(*acc, &executor.master.runtime, 1000_000_000_000)
 		});
 		std::thread::sleep(std::time::Duration::from_millis(200));
 		assert_eq!(executor.master.workers.len(), 3);
 
-		let (state1, block1) = executor.author_block(txs.clone());
+		let (state1, block1, _) = executor.author_block(txs.clone());
 		executor.clean();
 
 		// master queue must be empty.
@@ -231,7 +250,7 @@ mod concurrent_executor {
 				1000_000_000_000,
 			)
 		});
-		let (state2, block2) = executor.author_block(txs);
+		let (state2, block2, _) = executor.author_block(txs);
 		executor.clean();
 
 		assert_eq!(executor.master.tx_pool.len(), 0);
@@ -311,7 +330,7 @@ mod concurrent_executor {
 					std::thread::sleep(std::time::Duration::from_millis(500));
 					assert_eq!(executor.master.workers.len(), 4);
 
-					let (transfers, accounts) = transaction_generator::bank(NUM_ACCOUNTS, NUM_TXS);
+					let (transfers, accounts) = transaction_generator::bank(NUM_ACCOUNTS, NUM_TXS, 100);
 
 					let initial_state = InitialStateGenerate::new().with_runtime(|rt|
 					accounts.iter().for_each(|acc| {
@@ -333,5 +352,5 @@ mod concurrent_executor {
 	}
 
 	bank_test_with_distribution!(RoundRobin, bank_round_robin,);
-	bank_test_with_distribution!(ConnectedComponentsDistributer, bank_connected_components,);
+	bank_test_with_distribution!(ConnectedComponents, bank_connected_components,);
 }

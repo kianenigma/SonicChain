@@ -6,7 +6,7 @@ use primitives::*;
 use runtime::SequentialRuntime;
 use std::matches;
 
-pub use node::ConnectedComponentsDistributer;
+pub use node::ConnectedComponents;
 
 const LOG_TARGET: &'static str = "tx-dist";
 
@@ -24,7 +24,6 @@ pub trait Distributer {
 }
 
 pub mod node {
-	#![allow(dead_code)]
 	use super::*;
 	use std::{
 		cell::RefCell,
@@ -55,14 +54,14 @@ pub mod node {
 	}
 
 	impl Node {
-		fn new(node_type: NodeType) -> Self {
-			Self {
-				node_type,
-				keys: Default::default(),
-				txs: Default::default(),
-				component: None,
-			}
-		}
+		// fn new(node_type: NodeType) -> Self {
+		// 	Self {
+		// 		node_type,
+		// 		keys: Default::default(),
+		// 		txs: Default::default(),
+		// 		component: None,
+		// 	}
+		// }
 
 		fn new_tx(tx: TransactionId, keys: Vec<Rc<NodeCell>>) -> Self {
 			Self {
@@ -209,9 +208,9 @@ pub mod node {
 		}
 	}
 
-	pub struct ConnectedComponentsDistributer;
+	pub struct ConnectedComponents;
 
-	impl Distributer for ConnectedComponentsDistributer {
+	impl Distributer for ConnectedComponents {
 		fn distribute<P: TransactionPool<Transaction>>(
 			runtime: &SequentialRuntime,
 			worker_ids: &[ThreadId],
@@ -342,14 +341,14 @@ pub mod node {
 		#[test]
 		fn it_works() {
 			logging::init_logger();
-			let (load, _) = types::transaction_generator::bank(50, 10);
+			let (load, _) = types::transaction_generator::bank(50, 10, 100);
 			let mut pool = Pool::from(load);
 			let state = State::default().as_arc();
 			let rt = SequentialRuntime::new(state, 1);
 			let workers = vec![1, 2, 3];
 
 			// all the assertions are in the code.
-			ConnectedComponentsDistributer::distribute(&rt, &workers, &mut pool);
+			ConnectedComponents::distribute(&rt, &workers, &mut pool);
 		}
 	}
 }

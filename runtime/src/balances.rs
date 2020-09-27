@@ -80,7 +80,12 @@ decl_storage_map!(
 );
 
 decl_tx! {
-	#[access = (|origin| { vec![<BalanceOf<R>>::key_for(origin), <BalanceOf<R>>::key_for(dest.clone())] })]
+	#[access = (|origin| {
+		vec![
+			<BalanceOf<R>>::key_for(origin),
+			// <BalanceOf<R>>::key_for(dest.clone()),
+		]
+	})]
 	fn transfer(
 		runtime,
 		origin,

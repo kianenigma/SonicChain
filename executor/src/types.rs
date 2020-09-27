@@ -278,7 +278,11 @@ pub mod transaction_generator {
 	/// This is pretty useful to demonstrate a common use case with orphans as well.
 	///
 	/// Accounts will be endowed.
-	pub fn bank(members: usize, transfers: usize) -> (Vec<Transaction>, Vec<AccountId>) {
+	pub fn bank(
+		members: usize,
+		transfers: usize,
+		amount: Balance,
+	) -> (Vec<Transaction>, Vec<AccountId>) {
 		use rand::seq::SliceRandom;
 
 		let accounts = (0..members).map(|_| testing::random()).collect::<Vec<_>>();
@@ -290,7 +294,7 @@ pub mod transaction_generator {
 
 				let call = runtime::OuterCall::Balances(runtime::balances::Call::Transfer(
 					to.public(),
-					100,
+					amount,
 				));
 
 				let signed_call = call.using_encoded(|payload| from.sign(payload));

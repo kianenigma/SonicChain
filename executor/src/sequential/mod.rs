@@ -1,5 +1,6 @@
 use crate::{State, *};
 use runtime::*;
+use std::time::Duration;
 use types::*;
 
 const LOG_TARGET: &'static str = "seq-exec";
@@ -42,25 +43,34 @@ impl SequentialExecutor {
 }
 
 impl Executor for SequentialExecutor {
-	fn author_block(&mut self, initial_transactions: Vec<Transaction>) -> (StateMap, Block) {
+	fn author_block(
+		&mut self,
+		initial_transactions: Vec<Transaction>,
+	) -> (StateMap, Block, Duration) {
 		log!(
 			info,
-			"Authoring block with {} transactions.",
+			"📕 Authoring block with {} transactions.",
 			initial_transactions.len(),
 		);
+		let start = std::time::Instant::now();
 		// simply apply the transactions, ony by fucking one.
 		self.apply_transaction(initial_transactions.clone());
-		(self.runtime.state.dump(), initial_transactions.into())
+		(
+			self.runtime.state.dump(),
+			initial_transactions.into(),
+			start.elapsed(),
+		)
 	}
 
-	fn validate_block(&mut self, block: Block) -> StateMap {
+	fn validate_block(&mut self, block: Block) -> (StateMap, Duration) {
 		log!(
 			info,
-			"Validating block with {} transactions. ",
+			"✅ Validating block with {} transactions. ",
 			block.transactions.len(),
 		);
+		let start = std::time::Instant::now();
 		self.apply_transaction(block.transactions);
-		self.runtime.state.dump()
+		(self.runtime.state.dump(), start.elapsed())
 	}
 
 	fn clean(&mut self) {
@@ -88,7 +98,7 @@ mod tests {
 
 		transaction_generator::endow_account(testing::alice().public(), &executor.runtime, 100);
 
-		let (state, block) = executor.author_block(transactions);
+		let (state, block, _) = executor.author_block(transactions);
 		assert_eq!(block.transactions.len(), 2);
 		assert_eq!(
 			state
@@ -125,11 +135,11 @@ mod tests {
 		let transactions = transaction_generator::simple_alice_bob_dave();
 		transaction_generator::endow_account(testing::alice().public(), &executor.runtime, 100);
 
-		let (_, block) = executor.author_block(transactions);
+		let (_, block, _) = executor.author_block(transactions);
 		executor.clean();
 
 		transaction_generator::endow_account(testing::alice().public(), &executor.runtime, 100);
-		let validation_state = executor.validate_block(block);
+		let (validation_state, _) = executor.validate_block(block);
 		assert_eq!(
 			validation_state
 				.get(&<BalanceOf<SequentialRuntime>>::key_for(
@@ -171,6 +181,10 @@ mod tests {
 			})
 			.build();
 
-		assert!(executor.author_and_validate(transactions, Some(initial_state)));
+		assert!(
+			executor
+				.author_and_validate(transactions, Some(initial_state))
+				.0
+		);
 	}
 }
