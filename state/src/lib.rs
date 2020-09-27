@@ -179,6 +179,16 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 		self.backend.write().unwrap().insert(at.clone(), value);
 	}
 
+	/// Unsafely taint a key by a thread id.
+	///
+	/// The value is not changed.
+	pub fn unsafe_taint(&self, at: K, taint: T) {
+		self.backend
+			.write()
+			.unwrap()
+			.insert(at, StateEntry::new_taint(taint));
+	}
+
 	/// Unsafe insert of a value, wiping away the taint value.
 	pub fn unsafe_insert_genesis_value(&self, at: &K, value: V) {
 		write_sleep!();

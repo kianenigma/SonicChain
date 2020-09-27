@@ -257,10 +257,14 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 						self.orphan_pool.push(orphan);
 					}
 					MessagePayload::WorkerExecuted(tid) => {
-						let (_, t) = self
+						let idx = self
 							.tx_pool
-							.get_mut(|t| t.id == tid)
+							.iter()
+							.position(|t| t.id == tid)
 							.expect("Transaction must exist in the pool");
+
+						// Remove this transaction. Later on we add it to the end.
+						let mut t = self.tx_pool.remove_at(idx);
 
 						log!(trace, "Updating owner of {:?} to {:?}", t, worker);
 						// initially, the transaction must have been marked with Done(_) of some
@@ -273,6 +277,9 @@ impl<P: TransactionPool<Transaction>, D: Distributer> Master<P, D> {
 							}
 							_ => panic!("Unexpected initial worker."),
 						};
+
+						// Add it to the end. This ensures partial order, which is important.
+						self.tx_pool.push_back(t);
 					}
 					_ => panic!("Unexpected message type at master."),
 				}

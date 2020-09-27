@@ -256,12 +256,17 @@ pub mod transaction_generator {
 	}
 
 	/// build `count` random transfers.
-	pub fn random_transfers(count: usize) -> Vec<Transaction> {
+	pub fn random_transfers(count: usize) -> Vec<(Transaction, AccountId, AccountId)> {
 		(0..count)
 			.map(|c| {
 				let sender = testing::random();
 				let recipient = testing::random().public();
-				build_transfer(c as TransactionId, sender, recipient)
+				let sender_public = sender.public();
+				(
+					build_transfer(c as TransactionId, sender, recipient),
+					sender_public,
+					recipient,
+				)
 			})
 			.collect::<Vec<_>>()
 	}

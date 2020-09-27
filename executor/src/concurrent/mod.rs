@@ -156,7 +156,7 @@ mod concurrent_executor {
 	use crate::{pool::TransactionPool, *};
 	use logging::init_logger;
 	use primitives::testing::*;
-	use runtime::InitialStateGenerate;
+	use runtime::{balances::BalanceOf, ConcurrentRuntime, InitialStateGenerate};
 	use types::transaction_generator;
 
 	#[test]
@@ -312,6 +312,76 @@ mod concurrent_executor {
 		assert!(master.join_all().is_ok());
 	}
 
+	#[test]
+	fn pool_must_reorder_when_forward() {
+		init_logger();
+		let mut executor = ConcurrentExecutor::<Pool, RoundRobin>::new(2, false, None);
+
+		let txs_and_accounts = transaction_generator::random_transfers(4);
+
+		txs_and_accounts.iter().for_each(|(_, sender, _)| {
+			transaction_generator::endow_account(*sender, &executor.master.runtime, 1000_000_000)
+		});
+
+		assert_eq!(
+			txs_and_accounts
+				.iter()
+				.map(|(tx, _, _)| tx.id)
+				.collect::<Vec<_>>(),
+			vec![0u32, 1, 2, 3]
+		);
+		assert_eq!(executor.master.workers.len(), 2);
+
+		// if nothing is tainted initially:
+		let txs = txs_and_accounts
+			.iter()
+			.cloned()
+			.map(|(tx, _, _)| tx)
+			.collect();
+		let (_, block, _) = executor.author_block(txs);
+
+		assert_eq!(
+			block
+				.transactions
+				.iter()
+				.map(|tx| tx.id)
+				.collect::<Vec<_>>(),
+			vec![0u32, 1, 2, 3,]
+		);
+
+		executor.clean();
+
+		// manually taint something from transaction-id 1 to the second thread.
+		let taint = executor
+			.master
+			.workers
+			.iter()
+			.map(|(id, _)| *id)
+			.collect::<Vec<_>>()[1];
+		dbg!(&taint);
+		// taint the third transaction's key with the id of the second thread. This was supposed to
+		// go to the first thread.
+		let at = <BalanceOf<ConcurrentRuntime>>::key_for(txs_and_accounts[2].1);
+		executor.master.state.unsafe_taint(at, taint);
+
+		let txs = txs_and_accounts
+			.iter()
+			.cloned()
+			.map(|(tx, _, _)| tx)
+			.collect();
+		let (_, block, _) = executor.author_block(txs);
+
+		assert_eq!(
+			block
+				.transactions
+				.iter()
+				.map(|tx| tx.id)
+				.collect::<Vec<_>>(),
+			// See the re-order of the transaction!
+			vec![0u32, 1, 3, 2,]
+		);
+	}
+
 	macro_rules! bank_test_with_distribution {
 		($( $distribution:ty, $name:ident ,)*) => {
 			$(
@@ -324,7 +394,7 @@ mod concurrent_executor {
 					// we can do for now is to call author and validate so that we can be more or
 					// less sure that at least a concurrent validation will lead to the same result.
 					const NUM_ACCOUNTS: usize = 10;
-					const NUM_TXS: usize = 1_000;
+					const NUM_TXS: usize = 250;
 
 					let mut executor = ConcurrentExecutor::<Pool, $distribution>::new(4, false, None);
 					std::thread::sleep(std::time::Duration::from_millis(500));
@@ -337,7 +407,7 @@ mod concurrent_executor {
 						transaction_generator::endow_account(
 							*acc,
 							rt,
-							1000_000_000_000,
+							1000_000,
 						)
 					})).build();
 
