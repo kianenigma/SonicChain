@@ -4,13 +4,13 @@
 
 > A wait-free, pseudo-static approach toward concurrency in blockchain runtimes 🚀.
 
-> This work (design, implementation, and the writing) has been submitted as my thesis for a Master's degree in [Parallel and Distributed Computer Systems]() at [Vrije Universiteit Amsterdam](). The full report (raw LaTex) can be found in [this repository](), with the latest compiled PDF file [at the university thesis archive]().
+> This work (design, implementation, and the writing) has been submitted as my thesis for a Master's degree in [Parallel and Distributed Computer Systems]() at [Vrije Universiteit Amsterdam](). The full report (raw LaTex) can be found in [this repository](https://github.com/kianenigma/Thesis), with the latest compiled PDF file [at the university thesis archive]().
 
 ## Key Points
 
 - Wait-free: Simple conflict resolution, without the need for locks, STM, or any other fancy concurrency control mechanism 🔐.
 -  Pseudo-static: instead, use data that is static to the lifetime of the transaction: transaction payload as meaningful hints to predict conflicting transactions in a effective manner 🦄.
-- Highly inspired by Parity Substrate's architecture as a scalable blockchain building framework ⚙️.
+- Highly inspired by [Parity's Substrate](https://github.com/paritytech/substrate/) architecture as a scalable blockchain building framework ⚙️.
 
 ## Example Runtime Module
 
