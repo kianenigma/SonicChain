@@ -38,7 +38,7 @@ pub trait StateEq {
 	fn state_eq(&self, other: Self) -> bool;
 }
 
-impl<K: KeyT, V: ValueT, T: TaintT> StateEq for MapType<K, V, T> {
+impl<K: KeyT, V: ValueT, T: TaintT> StateEq for StateType<K, V, T> {
 	fn state_eq(&self, other: Self) -> bool {
 		self.iter()
 			.all(|(k, v)| other.get(k).map(|vv| v.data == vv.data).unwrap_or(false))
@@ -87,7 +87,7 @@ pub trait GenericState<K, V, T> {
 }
 
 /// The inner HashMap type.
-pub type MapType<K, V, T> = HashMap<K, StateEntry<V, T>>;
+pub type StateType<K, V, T> = HashMap<K, StateValue<V, T>>;
 
 pub trait KeyT: Clone + Debug + std::hash::Hash + Eq + PartialEq {}
 impl<T: Clone + Debug + std::hash::Hash + Eq + PartialEq> KeyT for T {}
@@ -98,24 +98,29 @@ impl<T: Clone + Debug + Default + Eq + PartialEq> ValueT for T {}
 pub trait TaintT: Clone + Copy + Debug + Eq + PartialEq {}
 impl<T: Clone + Copy + Debug + Eq + PartialEq> TaintT for T {}
 
+/// A value inserted into the state.
+///
+/// This type in itself does not provide any locking mechanism.
 #[derive(Default, Debug, Clone)]
-pub struct StateEntry<V, T> {
+pub struct StateValue<V, T> {
+	/// The data itself.
 	data: RefCell<V>,
+	/// The taint associated with the data.
 	taint: Option<T>,
 }
 
-impl<V: ValueT, T> PartialEq for StateEntry<V, T> {
+impl<V: ValueT, T> PartialEq for StateValue<V, T> {
 	fn eq(&self, other: &Self) -> bool {
 		self.data.eq(&other.data)
 	}
 }
 
-impl<V: ValueT, T> Eq for StateEntry<V, T> {}
+impl<V: ValueT, T> Eq for StateValue<V, T> {}
 
 // or just use atomic RefCell.
-unsafe impl<V, T> Sync for StateEntry<V, T> {}
+unsafe impl<V, T> Sync for StateValue<V, T> {}
 
-impl<V: ValueT, T: TaintT> StateEntry<V, T> {
+impl<V: ValueT, T: TaintT> StateValue<V, T> {
 	pub fn data(&self) -> V {
 		self.data.borrow().clone()
 	}
@@ -150,14 +155,14 @@ impl<V: ValueT, T: TaintT> StateEntry<V, T> {
 /// This is a highly concurrent implementation. Locking is scarce.
 #[derive(Debug, Default)]
 pub struct TaintState<K: KeyT, V: ValueT, T: TaintT> {
-	backend: RwLock<MapType<K, V, T>>,
+	backend: RwLock<StateType<K, V, T>>,
 }
 
 impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 	/// Create a new `TaintState`.
 	pub fn new() -> Self {
 		Self {
-			backend: RwLock::new(MapType::default()),
+			backend: RwLock::new(StateType::default()),
 		}
 	}
 
@@ -169,12 +174,12 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 	/// Create self with given capacity.
 	pub fn with_capacity(capacity: usize) -> Self {
 		Self {
-			backend: RwLock::new(MapType::with_capacity(capacity)),
+			backend: RwLock::new(StateType::with_capacity(capacity)),
 		}
 	}
 
 	/// Unsafe implementation of insert. This will not respect the tainting of the key.
-	pub fn unsafe_insert(&self, at: &K, value: StateEntry<V, T>) {
+	pub fn unsafe_insert(&self, at: &K, value: StateValue<V, T>) {
 		write_sleep!();
 		self.backend.write().unwrap().insert(at.clone(), value);
 	}
@@ -186,7 +191,7 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 		self.backend
 			.write()
 			.unwrap()
-			.insert(at, StateEntry::new_taint(taint));
+			.insert(at, StateValue::new_taint(taint));
 	}
 
 	/// Unsafe insert of a value, wiping away the taint value.
@@ -196,13 +201,13 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 		self.backend
 			.write()
 			.unwrap()
-			.insert(at.clone(), StateEntry::new_data(value));
+			.insert(at.clone(), StateValue::new_data(value));
 	}
 
 	/// Return a dump of the state at this point in time as a HashMap.
 	///
 	/// Note that this copied all the data to na new hashmap and hence is an expensive operation.
-	pub fn dump(&self) -> MapType<K, V, T> {
+	pub fn dump(&self) -> StateType<K, V, T> {
 		self.backend
 			.read()
 			.map(|g| g.clone())
@@ -244,7 +249,7 @@ impl<K: KeyT, V: ValueT, T: TaintT> TaintState<K, V, T> {
 	}
 
 	/// Unsafe implementation of read. This will not respect the tainting of the key.
-	fn unsafe_read(&self, key: &K) -> Option<StateEntry<V, T>> {
+	fn unsafe_read(&self, key: &K) -> Option<StateValue<V, T>> {
 		sleep_read!();
 		self.backend.read().unwrap().get(key).cloned()
 	}
@@ -302,7 +307,7 @@ impl<K: KeyT, V: ValueT, T: TaintT> GenericState<K, V, T> for TaintState<K, V, T
 				}
 			} else {
 				// we have the write lock and the entry does not have taint. Taint and read.
-				let new_entry = <StateEntry<V, T>>::new_taint(current);
+				let new_entry = <StateValue<V, T>>::new_taint(current);
 				write_guard.insert(key.clone(), new_entry);
 				Ok(Default::default())
 			}
@@ -360,7 +365,7 @@ impl<K: KeyT, V: ValueT, T: TaintT> GenericState<K, V, T> for TaintState<K, V, T
 					Err(owner)
 				}
 			} else {
-				let new_entry = <StateEntry<V, T>>::new(value, current);
+				let new_entry = <StateValue<V, T>>::new(value, current);
 				write_guard.insert(key.clone(), new_entry);
 				Ok(())
 			}
@@ -385,7 +390,7 @@ mod test_state {
 	#[test]
 	fn basic_state_works() {
 		let state = TaintState::new();
-		state.unsafe_insert(&33, StateEntry::new("Foo", "Thread1"));
+		state.unsafe_insert(&33, StateValue::new("Foo", "Thread1"));
 		assert_eq!(state.unsafe_read_value(&33).unwrap(), "Foo");
 		assert_eq!(state.unsafe_read_taint(&33).unwrap(), "Thread1");
 	}
@@ -467,7 +472,7 @@ mod test_state {
 			)
 			.is_ok());
 
-		state.unsafe_insert(&11, StateEntry::new(11, 2));
+		state.unsafe_insert(&11, StateValue::new(11, 2));
 
 		assert!(state
 			.mutate(
@@ -505,7 +510,7 @@ mod test_state {
 	#[test]
 	fn can_have_genesis_values() {
 		let state = TestState::new();
-		state.unsafe_insert(&10u32, StateEntry::new_data(10u32));
+		state.unsafe_insert(&10u32, StateValue::new_data(10u32));
 
 		assert_eq!(state.unsafe_read_taint(&10u32), None);
 		assert_eq!(state.unsafe_read_value(&10u32), Some(10u32));
@@ -517,7 +522,7 @@ mod test_state {
 	#[test]
 	fn taints_upon_first_read_of_genesis_values() {
 		let state = TestState::new();
-		state.unsafe_insert(&10u32, StateEntry::new_data(10u32));
+		state.unsafe_insert(&10u32, StateValue::new_data(10u32));
 
 		assert_eq!(state.unsafe_read_taint(&10u32), None);
 		assert_eq!(state.unsafe_read_value(&10u32), Some(10u32));
@@ -531,7 +536,7 @@ mod test_state {
 	#[test]
 	fn taints_upon_first_write_of_genesis_values() {
 		let state = TestState::new();
-		state.unsafe_insert(&10u32, StateEntry::new_data(10u32));
+		state.unsafe_insert(&10u32, StateValue::new_data(10u32));
 
 		assert_eq!(state.unsafe_read_taint(&10u32), None);
 		assert_eq!(state.unsafe_read_value(&10u32), Some(10u32));
@@ -545,8 +550,8 @@ mod test_state {
 	#[test]
 	fn duplicate_works() {
 		let initial = TestState::new();
-		initial.unsafe_insert(&10u32, StateEntry::new_data(10u32));
-		initial.unsafe_insert(&11u32, StateEntry::new(11, 1));
+		initial.unsafe_insert(&10u32, StateValue::new_data(10u32));
+		initial.unsafe_insert(&11u32, StateValue::new(11, 1));
 
 		let state = TestState::new();
 		state.unsafe_duplicate(initial);
@@ -554,14 +559,14 @@ mod test_state {
 		let dump = state.dump();
 		assert_eq!(
 			*dump.get(&10).unwrap(),
-			StateEntry {
+			StateValue {
 				data: 10u32.into(),
 				taint: None,
 			}
 		);
 		assert_eq!(
 			*dump.get(&11).unwrap(),
-			StateEntry {
+			StateValue {
 				data: 11u32.into(),
 				taint: Some(1),
 			}
@@ -571,20 +576,20 @@ mod test_state {
 	#[test]
 	fn dump_works() {
 		let state = TestState::new();
-		state.unsafe_insert(&10u32, StateEntry::new_data(10u32));
-		state.unsafe_insert(&11u32, StateEntry::new(11, 1));
+		state.unsafe_insert(&10u32, StateValue::new_data(10u32));
+		state.unsafe_insert(&11u32, StateValue::new(11, 1));
 
 		let dump = state.dump();
 		assert_eq!(
 			*dump.get(&10).unwrap(),
-			StateEntry {
+			StateValue {
 				data: 10u32.into(),
 				taint: None,
 			}
 		);
 		assert_eq!(
 			*dump.get(&11).unwrap(),
-			StateEntry {
+			StateValue {
 				data: 11u32.into(),
 				taint: Some(1),
 			}
@@ -594,19 +599,19 @@ mod test_state {
 	#[test]
 	fn clean_works() {
 		let state = TestState::new();
-		state.unsafe_insert(&10u32, StateEntry::new_data(10u32));
-		state.unsafe_insert(&11u32, StateEntry::new(11, 1));
+		state.unsafe_insert(&10u32, StateValue::new_data(10u32));
+		state.unsafe_insert(&11u32, StateValue::new(11, 1));
 
 		assert_eq!(
 			state.unsafe_read(&10).unwrap(),
-			StateEntry {
+			StateValue {
 				data: 10u32.into(),
 				taint: None,
 			}
 		);
 		assert_eq!(
 			state.unsafe_read(&11).unwrap(),
-			StateEntry {
+			StateValue {
 				data: 11u32.into(),
 				taint: Some(1),
 			}
@@ -620,20 +625,20 @@ mod test_state {
 	#[test]
 	fn state_eq_works() {
 		let state1 = TestState::new();
-		state1.unsafe_insert(&10u32, StateEntry::new_data(10u32));
-		state1.unsafe_insert(&11u32, StateEntry::new(11, 1));
+		state1.unsafe_insert(&10u32, StateValue::new_data(10u32));
+		state1.unsafe_insert(&11u32, StateValue::new(11, 1));
 		let dump1 = state1.dump();
 
 		let state2 = TestState::new();
-		state2.unsafe_insert(&10u32, StateEntry::new_data(10u32));
-		state2.unsafe_insert(&11u32, StateEntry::new(11, 1));
+		state2.unsafe_insert(&10u32, StateValue::new_data(10u32));
+		state2.unsafe_insert(&11u32, StateValue::new(11, 1));
 		let dump2 = state2.dump();
 
 		assert!(dump1.state_eq(dump2));
 
 		let state3 = TestState::new();
-		state3.unsafe_insert(&10u32, StateEntry::new_data(11u32));
-		state3.unsafe_insert(&11u32, StateEntry::new(11, 1));
+		state3.unsafe_insert(&10u32, StateValue::new_data(11u32));
+		state3.unsafe_insert(&11u32, StateValue::new(11, 1));
 		let dump3 = state3.dump();
 
 		assert!(!dump1.state_eq(dump3));
@@ -642,13 +647,13 @@ mod test_state {
 	#[test]
 	fn state_eq_ignores_taint() {
 		let state1 = TestState::new();
-		state1.unsafe_insert(&10u32, StateEntry::new_data(10u32));
-		state1.unsafe_insert(&11u32, StateEntry::new(11, 1));
+		state1.unsafe_insert(&10u32, StateValue::new_data(10u32));
+		state1.unsafe_insert(&11u32, StateValue::new(11, 1));
 		let dump1 = state1.dump();
 
 		let state2 = TestState::new();
-		state2.unsafe_insert(&10u32, StateEntry::new_data(10u32));
-		state2.unsafe_insert(&11u32, StateEntry::new(11, 2));
+		state2.unsafe_insert(&10u32, StateValue::new_data(10u32));
+		state2.unsafe_insert(&11u32, StateValue::new(11, 2));
 		let dump2 = state2.dump();
 
 		assert!(dump1.state_eq(dump2));

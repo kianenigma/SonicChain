@@ -43,7 +43,7 @@ pub fn middle_class_playground<R: ModuleRuntime>(
 	let (transactions, accounts) = bank(members, transfers, transfer_amount);
 	accounts.into_iter().enumerate().for_each(|(idx, acc)| {
 		if idx < lucky_members {
-			// will a lot.
+			// will have a lot.
 			endow_account(acc, rt, transfer_amount * 1000_000)
 		} else {
 			// will have half.

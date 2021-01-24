@@ -1,10 +1,8 @@
 use executor::{concurrent::*, types::*, *};
-use logging::log;
 use primitives::*;
 use rand::seq::SliceRandom;
 use runtime::*;
 use state::StateEq;
-use std::time::Duration;
 
 mod datasets;
 mod middle_class;
@@ -65,6 +63,7 @@ fn concurrent_stakers<D: tx_distribution::Distributer>() {
 fn main() {
 	logging::init_logger();
 
-	// millionaires::millionaires_playground_bench();
-	middle_class::middle_class_playground_bench();
+	millionaires::millionaires_playground_bench();
+	// millionaires::growing_economy();
+	// middle_class::middle_class_playground_bench();
 }

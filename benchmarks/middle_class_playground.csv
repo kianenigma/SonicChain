@@ -1,5 +1,8 @@
 middle_class_playground,-,-,-,-,-
 type,members,lucky,transactions,authoring time(ms),validation time(ms)
-"Concurrent(ConnectedComponents,4)",1000,250,500,705,587
-"Concurrent(ConnectedComponents,4)",1000,500,500,1246,1010
-"Concurrent(ConnectedComponents,4)",1000,1000,500,2108,1698
+seq,1000,250,500,1556,1552
+seq,1000,500,500,2352,2399
+seq,1000,1000,500,3743,3844
+Concurrent(ConnectedComponents-4),1000,250,500,508,413
+Concurrent(ConnectedComponents-4),1000,500,500,1141,849
+Concurrent(ConnectedComponents-4),1000,1000,500,1258,935

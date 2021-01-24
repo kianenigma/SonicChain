@@ -549,7 +549,7 @@ mod worker_test_authoring {
 		let alice_key = <BalanceOf<ConcurrentRuntime>>::key_for(alice);
 		worker
 			.state
-			.unsafe_insert(&alice_key, state::StateEntry::new_taint(OTHER_WORKER));
+			.unsafe_insert(&alice_key, state::StateValue::new_taint(OTHER_WORKER));
 
 		assert!(matches!(
 			worker.execute_or_forward(tx.clone()),
@@ -572,7 +572,7 @@ mod worker_test_authoring {
 		let alice_key = <BalanceOf<ConcurrentRuntime>>::key_for(alice);
 		worker
 			.state
-			.unsafe_insert(&alice_key, state::StateEntry::new_taint(OTHER_WORKER));
+			.unsafe_insert(&alice_key, state::StateValue::new_taint(OTHER_WORKER));
 
 		assert!(matches!(
 			worker.execute_or_forward(tx),

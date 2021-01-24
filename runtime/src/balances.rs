@@ -4,9 +4,12 @@ use primitives::*;
 
 const MODULE: &'static str = "balances";
 
+/// The amount of balance that a certain account.
 #[derive(Debug, Clone, Default, Eq, PartialEq, Encode, Decode)]
 pub struct AccountBalance {
+	/// The amount that is free and allowed to be transferred out.
 	free: Balance,
+	/// The mount that is reserved, potentially because of the balance being used in other modules.
 	reserved: Balance,
 }
 
@@ -80,18 +83,13 @@ decl_storage_map!(
 );
 
 decl_tx! {
-	#[access = (|origin| {
+	#[access = (|origin|
 		vec![
 			<BalanceOf<R>>::key_for(origin),
-			// <BalanceOf<R>>::key_for(dest.clone()),
+			<BalanceOf<R>>::key_for(dest.clone())
 		]
-	})]
-	fn transfer(
-		runtime,
-		origin,
-		dest: AccountId,
-		value: Balance,
-	) {
+	)]
+	fn transfer(runtime, origin, dest: AccountId, value: Balance) {
 		// If we fail at this step, it is fine. We have not written anything yet.
 		let mut old_balance =
 			BalanceOf::read(runtime, origin).or_forward()?;

@@ -23,7 +23,7 @@ pub use state_generator::InitialStateGenerate;
 pub type RuntimeState = TaintState<Key, Value, ThreadId>;
 
 /// The inner hash map used in state.
-pub type StateMap = state::MapType<Key, Value, ThreadId>;
+pub type StateMap = state::StateType<Key, Value, ThreadId>;
 
 const LOG_TARGET: &'static str = "runtime";
 
@@ -227,7 +227,7 @@ impl ConcurrentRuntime {
 		self.cache.borrow().iter().for_each(|(k, v)| {
 			debug_assert_eq!(self.state.unsafe_read_taint(k).unwrap(), self.id);
 			self.state
-				.unsafe_insert(k, state::StateEntry::new(v.to_owned(), self.id));
+				.unsafe_insert(k, state::StateValue::new(v.to_owned(), self.id));
 		});
 	}
 
@@ -365,7 +365,7 @@ mod concurrent_runtime_test {
 		let rt = ConcurrentRuntime::new(Arc::clone(&state), 1);
 
 		// current runtime is 1, taint with 2.
-		state.unsafe_insert(&k1, state::StateEntry::new_taint(2));
+		state.unsafe_insert(&k1, state::StateValue::new_taint(2));
 
 		assert!(rt.read(&k1).is_err());
 		assert!(rt.write(&k1, vec![1, 2, 3].into()).is_err());
@@ -458,7 +458,7 @@ mod sequential_runtime_test {
 		let rt = SequentialRuntime::new(Arc::clone(&state), 1);
 
 		// current runtime is 1, taint with 2.
-		state.unsafe_insert(&k1, state::StateEntry::new_taint(2));
+		state.unsafe_insert(&k1, state::StateValue::new_taint(2));
 
 		assert!(rt.read(&k1).is_ok());
 		assert!(rt.write(&k1, vec![1, 2, 3].into()).is_ok());

@@ -1,21 +1,23 @@
 use crate::datasets;
 use csv::Writer;
-use executor::{concurrent::*, sequential::*, *};
+use executor::{concurrent::*, *};
 use std::time::Duration;
-use tx_distribution::{ConnectedComponents, RoundRobin};
-
-const LOG_TARGET: &'static str = "middle_class_playground";
+use tx_distribution::ConnectedComponents;
 
 macro_rules! bench_seq {
 	($members:expr, $lucky:expr, $txs:expr, $wtr:ident) => {
 		let (authoring, validation) = seq_middle_class_playground($members, $txs, $lucky);
+		let authoring_tps = ($txs as f64) / ((authoring.as_millis() as f64) / 1000f64);
+		let validation_tps = ($txs as f64) / ((validation.as_millis() as f64) / 1000f64);
 		$wtr.write_record(&[
 			"seq",
 			stringify!($members),
 			stringify!($lucky),
 			stringify!($txs),
 			&authoring.as_millis().to_string(),
+			&format!("{:.2}", authoring_tps),
 			&validation.as_millis().to_string(),
+			&format!("{:.2}", validation_tps),
 			])
 		.unwrap();
 		$wtr.flush().unwrap();
@@ -27,7 +29,7 @@ macro_rules! bench_concurrent {
 		let (authoring, validation) =
 			concurrent_middle_class_playground::<$dist>($members, $txs, $lucky, $threads);
 		$wtr.write_record(&[
-			concat!("Concurrent(", stringify!($dist), ",", $threads, ")"),
+			concat!("Concurrent(", stringify!($dist), "-", $threads, ")"),
 			stringify!($members),
 			stringify!($lucky),
 			stringify!($txs),
@@ -39,23 +41,26 @@ macro_rules! bench_concurrent {
 	};
 }
 
+#[allow(dead_code)]
 pub fn middle_class_playground_bench() {
 	let mut wtr = Writer::from_path("middle_class_playground.csv").unwrap();
-	wtr.write_record(&["middle_class_playground", "-", "-", "-", "-", "-"])
+	wtr.write_record(&["middle_class_playground", "-", "-", "-", "-", "-", "-", "-"])
 		.unwrap();
 	wtr.write_record(&[
 		"type",
 		"members",
 		"lucky",
 		"transactions",
-		"authoring time(ms)",
-		"validation time(ms)",
+		"authoring (ms)",
+		"authoring tps",
+		"validation (ms)",
+		"validation tps",
 	])
 	.unwrap();
 
-	// bench_seq!(1000, 250, 500, wtr);
-	// bench_seq!(1000, 500, 500, wtr);
-	// bench_seq!(1000, 1000, 500, wtr);
+	bench_seq!(1000, 250, 500, wtr);
+	bench_seq!(1000, 500, 500, wtr);
+	bench_seq!(1000, 1000, 500, wtr);
 
 	bench_concurrent!(1000, 250, 500, ConnectedComponents, 4, wtr);
 	bench_concurrent!(1000, 500, 500, ConnectedComponents, 4, wtr);

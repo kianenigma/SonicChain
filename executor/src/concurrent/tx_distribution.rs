@@ -54,15 +54,6 @@ pub mod node {
 	}
 
 	impl Node {
-		// fn new(node_type: NodeType) -> Self {
-		// 	Self {
-		// 		node_type,
-		// 		keys: Default::default(),
-		// 		txs: Default::default(),
-		// 		component: None,
-		// 	}
-		// }
-
 		fn new_tx(tx: TransactionId, keys: Vec<Rc<NodeCell>>) -> Self {
 			Self {
 				node_type: NodeType::Tx(tx),
@@ -114,8 +105,6 @@ pub mod node {
 		}
 
 		fn traverse(start: Rc<NodeCell>, component_id: u32) -> Vec<Rc<NodeCell>> {
-			// debug_assert!(matches!(start.borrow().node_type, NodeType::Tx(_)));
-
 			let mut queue = vec![start];
 			let mut component = vec![];
 

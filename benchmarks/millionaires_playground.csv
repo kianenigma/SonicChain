@@ -1,17 +1,14 @@
-millionaires_playground,-,-,-,-
-type,members,transactions,authoring time(ms),validation time(ms)
-seq,1000,500,3735,3610
-seq,1000,1000,7242,7307
-seq,1000,2000,14909,14948
-"Concurrent(RoundRobin,2)",1000,500,2926,2225
-"Concurrent(RoundRobin,2)",1000,1000,6443,4835
-"Concurrent(RoundRobin,2)",1000,2000,13591,10276
-"Concurrent(RoundRobin,4)",1000,500,2159,1697
-"Concurrent(RoundRobin,4)",1000,1000,5161,4193
-"Concurrent(RoundRobin,4)",1000,2000,12134,10361
-"Concurrent(ConnectedComponents,2)",1000,500,2409,1762
-"Concurrent(ConnectedComponents,2)",1000,1000,9411,7035
-"Concurrent(ConnectedComponents,2)",1000,2000,19499,14516
-"Concurrent(ConnectedComponents,4)",1000,500,1212,898
-"Concurrent(ConnectedComponents,4)",1000,1000,9243,6882
-"Concurrent(ConnectedComponents,4)",1000,2000,19464,14568
+millionaires_playground,-,-,-,-,-,-
+type,members,transactions,authoring (ms),authoring tps,validation (ms),validation tps
+Sequential,1000,250,1899,131.65,1905,131.23
+Sequential,1000,500,3639,137.40,3797,131.68
+Sequential,1000,1000,7548,132.49,7508,133.19
+Sequential,1000,2000,15053,132.86,14969,133.61
+Concurrent(RoundRobin-4),1000,250,898,278.40,704,355.11
+Concurrent(RoundRobin-4),1000,500,2161,231.37,1789,279.49
+Concurrent(RoundRobin-4),1000,1000,5517,181.26,4545,220.02
+Concurrent(RoundRobin-4),1000,2000,12788,156.40,10797,185.24
+Concurrent(ConnectedComponents-4),1000,250,625,400.00,453,551.88
+Concurrent(ConnectedComponents-4),1000,500,1210,413.22,887,563.70
+Concurrent(ConnectedComponents-4),1000,1000,9510,105.15,7162,139.63
+Concurrent(ConnectedComponents-4),1000,2000,19698,101.53,14820,134.95
