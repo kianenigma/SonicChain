@@ -4,7 +4,12 @@
 
 > A wait-free, pseudo-static approach toward concurrency in blockchain runtimes 🚀.
 
-> This work (design, implementation, and the writing) has been submitted as my thesis for a Master's degree in [Parallel and Distributed Computer Systems]() at [Vrije Universiteit Amsterdam](). The full report (raw LaTex) can be found in [this repository](https://github.com/kianenigma/Thesis), with the latest compiled PDF file [at the university thesis archive]().
+> This work (design, implementation, and the writing) has been submitted as my thesis for a Master's degree in [Parallel and Distributed Computer Systems](https://vuweb.vu.nl/en/education/master/parallel-and-distributed-computer-systems) at [Vrije Universiteit Amsterdam](https://www.vu.nl/en/). 
+
+- The full report (raw LaTex) can be found in [this repository](https://github.com/kianenigma/Thesis).
+- Latest compiled PDF file in [this repo](./Thesis.pdf). 
+- The presentation can also be found [here](./Presentation.pdf).
+- [Submission to ArXiv](WAITING APPROVAL).
 
 ## Key Points
 
