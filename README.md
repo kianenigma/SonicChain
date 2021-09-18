@@ -58,4 +58,22 @@ Note that the access macro should not contain any computation as that would turn
 
 ## Citation
 
-To cite this work, TODO (until graduation)
+To cite this work: 
+
+
+```
+@article{DBLP:journals/corr/abs-2102-09073,
+  author    = {Kian Paimani},
+  title     = {SonicChain: {A} Wait-free, Pseudo-Static Approach Toward Concurrency
+               in Blockchains},
+  journal   = {CoRR},
+  volume    = {abs/2102.09073},
+  year      = {2021},
+  url       = {https://arxiv.org/abs/2102.09073},
+  eprinttype = {arXiv},
+  eprint    = {2102.09073},
+  timestamp = {Wed, 24 Feb 2021 15:42:45 +0100},
+  biburl    = {https://dblp.org/rec/journals/corr/abs-2102-09073.bib},
+  bibsource = {dblp computer science bibliography, https://dblp.org}
+}
+```
