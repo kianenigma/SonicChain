@@ -9,7 +9,7 @@
 - The full report (raw LaTex) can be found in [this repository](https://github.com/kianenigma/Thesis).
 - Latest compiled PDF file in [this repo](./Thesis.pdf). 
 - The presentation can also be found [here](./Presentation.pdf).
-- [Submission to ArXiv](WAITING APPROVAL).
+- [Submission to ArXiv](https://arxiv.org/abs/2102.09073).
 
 ## Key Points
 
